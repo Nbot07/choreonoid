@@ -1,6 +1,6 @@
 /**
    @author Shin'ichiro Nakaoka
-*/
+nnn*/
 
 #include "PythonConsoleView.h"
 #include "PythonScriptItem.h"
@@ -16,18 +16,15 @@
 #include <cnoid/MessageView>
 #include <cnoid/OptionManager>
 #include <cnoid/Archive>
-
-#ifdef CNOID_USE_PYBIND11
 #include <pybind11/embed.h>
-#endif
-
+#include <fmt/format.h>
 #include <iostream>
 #include "gettext.h"
 
 using namespace std;
 using namespace cnoid;
-using boost::format;
-namespace filesystem = boost::filesystem;
+using fmt::format;
+namespace filesystem = cnoid::stdx::filesystem;
 
 namespace {
 
@@ -73,11 +70,8 @@ public:
 class PythonPlugin : public Plugin
 {
 public:
-#ifdef CNOID_USE_PYBIND11
     unique_ptr<pybind11::scoped_interpreter> interpreter;
     unique_ptr<pybind11::gil_scoped_release> gil_scoped_release;
-#endif
-    
     std::unique_ptr<PythonExecutor> executor_;
     python::module mainModule;
     python::object globalNamespace;
@@ -88,16 +82,14 @@ public:
     python::object messageViewIn;
     python::module rollbackImporterModule;
 
-#ifdef CNOID_USE_BOOST_PYTHON
-    python::object stringOutBufClass;
-#endif
-        
     PythonPlugin();
     virtual bool initialize();
     bool initializeInterpreter();
     virtual bool finalize();
 
+    void onInputFileOptionsParsed(std::vector<std::string>& inputFiles);
     void onSigOptionsParsed(boost::program_options::variables_map& v);
+    void executeScriptFileOnStartup(const string& scriptFile);
     bool storeProperties(Archive& archive);
     void restoreProperties(const Archive& archive);
 
@@ -116,13 +108,9 @@ python::object pythonExit()
 {
     PyErr_SetObject(pythonPlugin->exitExceptionType.ptr(), 0);
     
-#ifdef CNOID_USE_PYBIND11
     if(PyErr_Occurred()){
         throw pybind11::error_already_set();
     }
-#else
-    python::throw_error_already_set();
-#endif
     
     return python::object();
 }
@@ -161,7 +149,10 @@ bool PythonPlugin::initialize()
     
     OptionManager& opm = optionManager();
     opm.addOption("python,p", boost::program_options::value< vector<string> >(), "load a python script file");
-    opm.sigOptionsParsed(1).connect([&](boost::program_options::variables_map& v){ onSigOptionsParsed(v); });
+    opm.sigInputFileOptionsParsed(1).connect(
+        [&](std::vector<std::string>& inputFiles){ onInputFileOptionsParsed(inputFiles); });
+    opm.sigOptionsParsed(1).connect(
+        [&](boost::program_options::variables_map& v){ onSigOptionsParsed(v); });
 
     setProjectArchiver(
         [&](Archive& archive){ return storeProperties(archive); },
@@ -171,32 +162,48 @@ bool PythonPlugin::initialize()
 }
 
 
+void PythonPlugin::onInputFileOptionsParsed(std::vector<std::string>& inputFiles)
+{
+    auto iter = inputFiles.begin();
+    while(iter != inputFiles.end()){
+        if(getExtension(*iter) == "py"){
+            executeScriptFileOnStartup(*iter);
+            iter = inputFiles.erase(iter);
+        } else {
+            ++iter;
+        }
+    }
+}
+
+
 void PythonPlugin::onSigOptionsParsed(boost::program_options::variables_map& v)
 {
-    if (v.count("python")) {
-        vector<string> pythonScriptFileNames = v["python"].as< vector<string> >();
+    if(v.count("python")){
+        vector<string> pythonScriptFileNames = v["python"].as<vector<string>>();
         for(unsigned int i = 0; i < pythonScriptFileNames.size(); i++){
-            MessageView::instance()->putln((format(_("Executing python script \"%1%\" ...")) % pythonScriptFileNames[i]).str());
-            executor().execFile(pythonScriptFileNames[i]);
-            if(!executor().hasException()){
-                MessageView::instance()->putln(_("The script finished."));
-            } else {
-                MessageView::instance()->putln(_("Failed to run the python script."));
-                python::gil_scoped_acquire lock;
-                MessageView::instance()->put(executor().exceptionText());
-            }
+            executeScriptFileOnStartup(pythonScriptFileNames[i]);
         }
+    }
+}
+
+
+void PythonPlugin::executeScriptFileOnStartup(const string& scriptFile)
+{
+    MessageView::instance()->putln(format(_("Executing python script \"{}\" ..."), scriptFile));
+    executor().execFile(scriptFile);
+    if(!executor().hasException()){
+        MessageView::instance()->putln(_("The script finished."));
+    } else {
+        MessageView::instance()->putln(MessageView::WARNING, _("Failed to run the python script."));
+        python::gil_scoped_acquire lock;
+        MessageView::instance()->put(executor().exceptionText());
     }
 }
 
 
 bool PythonPlugin::initializeInterpreter()
 {
-#ifdef CNOID_USE_PYBIND11
     interpreter.reset(new pybind11::scoped_interpreter(false));
-#else
-    Py_Initialize();
-#endif
 
     /*
       Some python module requires argv and missing argv may cause AttributeError.a
@@ -225,34 +232,23 @@ bool PythonPlugin::initializeInterpreter()
 	 using the Python variable, and it invalidates the updated PATH value if the value is
 	 set using C functions.
 	*/	
-#ifdef WIN32
+#ifdef _WIN32
     python::module env = python::module::import("os").attr("environ");
-#ifdef CNOID_USE_PYBIND11
     env["PATH"] = python::str(executableDirectory() + ";" + std::string(python::str(env["PATH"])));
-#else
-    env["PATH"] = python::str(executableDirectory() + ";") + env["PATH"];
-#endif
 #endif
 
     sysModule = python::module::import("sys");
+
+    sysModule.attr("dont_write_bytecode") = true;
     
     // set the choreonoid default python script path
     filesystem::path scriptPath = filesystem::path(executableTopDirectory()) / CNOID_PLUGIN_SUBDIR / "python";
 
-#ifdef CNOID_USE_PYBIND11
     sysModule.attr("path").attr("insert")(0, getNativePathString(scriptPath));
-#else
-    python::list syspath = python::extract<python::list>(sysModule.attr("path"));
-    syspath.insert(0, getNativePathString(scriptPath));
-#endif
 
     // Redirect the stdout and stderr to the message view
     python::object messageViewOutClass =
-#ifdef CNOID_USE_PYBIND11
         pybind11::class_<MessageViewOut>(mainModule, "MessageViewOut").def(pybind11::init<>())
-#else
-        python::class_<MessageViewOut>("MessageViewOut", python::init<>())
-#endif
         .def("write", &MessageViewOut::write)
         .def("flush", &MessageViewOut::flush);
     
@@ -262,26 +258,15 @@ bool PythonPlugin::initializeInterpreter()
 
     // Disable waiting for input
     python::object messageViewInClass =
-#ifdef CNOID_USE_PYBIND11
         pybind11::class_<MessageViewIn>(mainModule, "MessageViewIn").def(pybind11::init<>())
-#else
-        python::class_<MessageViewIn>("MessageViewIn", python::init<>())
-#endif
         .def("readline", &MessageViewIn::readline);
     messageViewIn = messageViewInClass();
     sysModule.attr("stdin") = messageViewIn;
 
-#ifdef CNOID_USE_PYBIND11
     pybind11::eval<pybind11::eval_single_statement>("class ExitException (Exception): pass\n");
     exitExceptionType = mainModule.attr("ExitException");
     pybind11::eval<pybind11::eval_single_statement>("del ExitException\n");
     pybind11::function exitFunc = pybind11::cpp_function(pythonExit);
-#else
-    python::exec("class ExitException (Exception): pass\n", globalNamespace);
-    exitExceptionType = mainModule.attr("ExitException");
-    python::exec("del ExitException\n", globalNamespace);
-    python::object exitFunc = python::make_function(pythonExit);
-#endif
 
     // Override exit and quit
     python::object builtins = globalNamespace["__builtins__"];
@@ -289,12 +274,7 @@ bool PythonPlugin::initializeInterpreter()
     builtins.attr("quit") = exitFunc;
     sysModule.attr("exit") = exitFunc;
 
-#ifdef CNOID_USE_PYBIND11
     gil_scoped_release.reset(new pybind11::gil_scoped_release());
-#else
-    PyEval_InitThreads();
-    PyEval_SaveThread();
-#endif
 
     return true;
 }
@@ -320,9 +300,6 @@ void PythonPlugin::restoreProperties(const Archive& archive)
     if(pathListing.isValid()){
         MessageView* mv = MessageView::instance();
         python::gil_scoped_acquire lock;
-#ifdef CNOID_USE_BOOST_PYTHON
-        python::list syspath = python::extract<python::list>(sysModule.attr("path"));
-#endif
         string newPath;
         for(int i=0; i < pathListing.size(); ++i){
             newPath = archive.resolveRelocatablePath(pathListing[i].toString());
@@ -336,14 +313,11 @@ void PythonPlugin::restoreProperties(const Archive& archive)
                     }
                 }
                 if(!isExisting){
-#ifdef CNOID_USE_PYBIND11
                     sysModule.attr("path").attr("insert")(0, getNativePathString(filesystem::path(newPath)));
-#else
-                    syspath.insert(0, getNativePathString(filesystem::path(newPath)));
-#endif
                     additionalSearchPathList.push_back(newPath);
-                    mv->putln(format(_("PythonPlugin: \"%1%\" has been added to the Python module search path list."))
-                              % newPath);
+                    mv->putln(
+                        format(_("PythonPlugin: \"{}\" has been added to the Python module search path list."),
+                               newPath));
                 }
             }
         }
@@ -396,27 +370,5 @@ python::module getRollbackImporterModule()
     }
     return pythonPlugin->rollbackImporterModule;
 }
-
-#ifdef CNOID_USE_BOOST_PYTHON
-
-python::object getStringOutBufClass()
-{
-    struct StringOutBuf
-    {
-        string buf;
-        void write(string const& text){ buf += text; }
-        const string& text() const { return buf; }
-    };
-    
-    if(!pythonPlugin->stringOutBufClass){
-        pythonPlugin->stringOutBufClass =
-            python::class_<StringOutBuf>("StringOutBuf", python::init<>())
-            .def("write", &StringOutBuf::write)
-            .def("text", &StringOutBuf::text, python::return_value_policy<python::copy_const_reference>());
-    }
-    return pythonPlugin->stringOutBufClass;
-};
-    
-#endif
 
 } // namespace cnoid

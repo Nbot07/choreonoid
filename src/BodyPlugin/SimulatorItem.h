@@ -25,6 +25,7 @@ class WorldItem;
 class BodyItem;
 class ControllerItem;
 class SimulationBodyImpl;
+class SimulatorItem;
 class SimulatorItemImpl;
 class SimulatedMotionEngineManager;
 class SgCloneMap;
@@ -45,6 +46,8 @@ public:
        Call this in the initilization when the shapes are accessed after the initialization
     */
     void cloneShapesOnce();
+
+    virtual bool initialize(SimulatorItem* simulatorItem, BodyItem* bodyItem);
 
     /**
        Called from the simulation loop thread
@@ -127,13 +130,17 @@ public:
 
     bool isRecordingEnabled() const;
     bool isDeviceStateOutputEnabled() const;
-        
+
+    void setSpecifiedRecordingTimeLength(double length);
+
     bool isAllLinkPositionOutputMode();
     virtual void setAllLinkPositionOutputMode(bool on);
 
     void setSelfCollisionEnabled(bool on);
     bool isSelfCollisionEnabled() const ;
-        
+
+    const std::string& controllerOptionString() const;
+    
     /**
        For sub simulators
     */
@@ -190,8 +197,10 @@ public:
 protected:
     SimulatorItem(const SimulatorItem& org);
 
-    virtual void onPositionChanged();
-    virtual void onDisconnectedFromRoot();
+    virtual void onPositionChanged() override;
+    virtual void onDisconnectedFromRoot() override;
+
+    virtual void clearSimulation();
 
     /**
        @note orgBody should not owned by the SimulationBody instance.
@@ -225,14 +234,14 @@ protected:
     */
     virtual void finalizeSimulation();
 
-    virtual CollisionLinkPairListPtr getCollisions()
+    virtual std::shared_ptr<CollisionLinkPairList> getCollisions()
     {
         return std::make_shared<CollisionLinkPairList>();
     }
 
-    void doPutProperties(PutPropertyFunction& putProperty);
-    bool store(Archive& archive);
-    bool restore(const Archive& archive);
+    virtual void doPutProperties(PutPropertyFunction& putProperty) override;
+    virtual bool store(Archive& archive) override;
+    virtual bool restore(const Archive& archive) override;
 
 #ifdef ENABLE_SIMULATION_PROFILING
     virtual void getProfilingNames(std::vector<std::string>& profilingNames);
@@ -240,9 +249,10 @@ protected:
 #endif
             
 private:
-            
     SimulatorItemImpl* impl;
+
     friend class SimulatorItemImpl;
+    friend class SimulationBodyImpl;
     friend class SimulatedMotionEngineManager;
 };
         

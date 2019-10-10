@@ -3,9 +3,10 @@
    @author Shin'ichiro Nakaoka
 */
 
-#ifndef CNOID_PHENOMENON_PLUGIN_RAIN_SNOW_DEVICE_H
-#define CNOID_PHENOMENON_PLUGIN_RAIN_SNOW_DEVICE_H
+#ifndef CNOID_SCENE_EFFECTS_PLUGIN_RAIN_SNOW_DEVICE_H
+#define CNOID_SCENE_EFFECTS_PLUGIN_RAIN_SNOW_DEVICE_H
 
+#include "ParticleSystem.h"
 #include <cnoid/Device>
 
 namespace cnoid {
@@ -26,8 +27,12 @@ public:
     bool on() const { return on_; }
     void on(bool on) { on_ = on; }
         
+    ParticleSystem& particleSystem() { return particleSystem_; }
+    const ParticleSystem& particleSystem() const { return particleSystem_; }
+
 private:
     bool on_;
+    ParticleSystem particleSystem_;
 };
 
 
@@ -39,8 +44,10 @@ public:
     virtual const char* typeName() override;
     virtual void copyStateFrom(const DeviceState& other) override;
     virtual DeviceState* cloneState() const override;
-    virtual Device* clone() const override;
     virtual void forEachActualType(std::function<bool(const std::type_info& type)> func) override;
+
+protected:
+    virtual Device* doClone(BodyCloneMap* cloneMap) const override;
 };
 
 typedef ref_ptr<RainDevice> RainDevicePtr;
@@ -54,8 +61,10 @@ public:
     virtual const char* typeName() override;
     virtual void copyStateFrom(const DeviceState& other) override;
     virtual DeviceState* cloneState() const override;
-    virtual Device* clone() const override;
     virtual void forEachActualType(std::function<bool(const std::type_info& type)> func) override;
+
+protected:
+    virtual Device* doClone(BodyCloneMap* cloneMap) const override;
 };
 
 typedef ref_ptr<SnowDevice> SnowDevicePtr;

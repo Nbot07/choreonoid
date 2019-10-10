@@ -7,14 +7,15 @@
 #include "RootItem.h"
 #include "ItemPath.h"
 #include "ItemManager.h"
-#include <boost/filesystem.hpp>
+#include <cnoid/stdx/filesystem>
+#include <chrono>
 #include <typeinfo>
 #include <unordered_set>
 #include "gettext.h"
 
 using namespace std;
-namespace filesystem = boost::filesystem;
 using namespace cnoid;
+namespace filesystem = cnoid::stdx::filesystem;
 
 //tmp
 #include <iostream>
@@ -27,10 +28,6 @@ unordered_set<Item*> itemsToEmitSigSubTreeChanged;
 int recursiveTreeChangeCounter = 0;
 unordered_set<Item*> itemsBeingAddedOrRemoved;
 
-}
-
-namespace cnoid {
-Signal<void(const char* type_info_name)> Item::sigClassUnregistered_;
 }
 
 
@@ -56,9 +53,9 @@ Item::Item(const Item& org) :
 
 void Item::init()
 {
-    parent_ = 0;
-    lastChild_ = 0;
-    prevItem_ = 0;
+    parent_ = nullptr;
+    lastChild_ = nullptr;
+    prevItem_ = nullptr;
 
     numChildren_ = 0;
 
@@ -170,14 +167,14 @@ bool Item::doInsertChildItem(ItemPtr item, Item* newNextItem, bool isManualOpera
             item->prevItem_ = prevItem;
         } else {
             firstChild_ = item;
-            item->prevItem_ = 0;
+            item->prevItem_ = nullptr;
         }
         newNextItem->prevItem_ = item;
 
     } else if(lastChild_){
         lastChild_->nextItem_ = item;
         item->prevItem_ = lastChild_;
-        item->nextItem_ = 0;
+        item->nextItem_ = nullptr;
         lastChild_ = item;
     } else {
         firstChild_ = item;
@@ -187,17 +184,19 @@ bool Item::doInsertChildItem(ItemPtr item, Item* newNextItem, bool isManualOpera
     ++numChildren_;
 
     if(rootItem){
-        if(!isMoving){
-            item->callFuncOnConnectedToRoot();
-        }
-        if(itemsBeingAddedOrRemoved.find(this) == itemsBeingAddedOrRemoved.end()){
-            // This must be before rootItem->notifyEventOnSubTreeAdded().
-            item->callSlotsOnPositionChanged();
-        }
         if(isMoving){
             rootItem->notifyEventOnSubTreeMoved(item);
         } else {
             rootItem->notifyEventOnSubTreeAdded(item);
+        }
+    }
+
+    if(rootItem){
+        if(!isMoving){
+            item->callFuncOnConnectedToRoot();
+        }
+        if(itemsBeingAddedOrRemoved.find(this) == itemsBeingAddedOrRemoved.end()){
+            item->callSlotsOnPositionChanged();
         }
     }
 
@@ -330,9 +329,9 @@ void Item::detachFromParentItemSub(bool isMoving)
     }
     
     --parent_->numChildren_;
-    parent_ = 0;
-    prevItem_ = 0;
-    nextItem_ = 0;
+    parent_ = nullptr;
+    prevItem_ = nullptr;
+    nextItem_ = nullptr;
 
     attributes.reset(SUB_ITEM);
 
@@ -342,7 +341,7 @@ void Item::detachFromParentItemSub(bool isMoving)
             if(itemsBeingAddedOrRemoved.find(parent_) == itemsBeingAddedOrRemoved.end()){
                 callSlotsOnPositionChanged(); // sigPositionChanged is also emitted
             }
-            emitSigDetachedFromRootForSubTree();
+            emitSigDisconnectedFromRootForSubTree();
         }
     }
 
@@ -357,12 +356,12 @@ void Item::detachFromParentItemSub(bool isMoving)
 }
 
 
-void Item::emitSigDetachedFromRootForSubTree()
+void Item::emitSigDisconnectedFromRootForSubTree()
 {
     for(Item* child = childItem(); child; child = child->nextItem()){
-        child->emitSigDetachedFromRootForSubTree();
+        child->emitSigDisconnectedFromRootForSubTree();
     }
-    sigDetachedFromRoot_();
+    sigDisconnectedFromRoot_();
 
     onDisconnectedFromRoot();
 }
@@ -393,7 +392,7 @@ static Item* findItemSub(Item* current, ItemPath::iterator it, ItemPath::iterato
     if(it == end){
         return current;
     }
-    Item* item = 0;
+    Item* item = nullptr;
     for(Item* child = current->childItem(); child; child = child->nextItem()){
         if(child->name() == *it){
             item = findItemSub(child, ++it, end);
@@ -432,7 +431,7 @@ static Item* findChildItemSub(Item* current, ItemPath::iterator it, ItemPath::it
     if(it == end){
         return current;
     }
-    Item* item = 0;
+    Item* item = nullptr;
     for(Item* child = current->childItem(); child; child = child->nextItem()){
         if(child->name() == *it){
             item = findChildItemSub(child, ++it, end);
@@ -457,7 +456,7 @@ static Item* findSubItemSub(Item* current, ItemPath::iterator it, ItemPath::iter
     if(it == end){
         return current;
     }
-    Item* item = 0;
+    Item* item = nullptr;
     for(Item* child = current->childItem(); child; child = child->nextItem()){
         if(child->name() == *it && child->isSubItem()){
             item = findSubItemSub(child, ++it, end);
@@ -477,13 +476,31 @@ Item* Item::findSubItem(const std::string& path) const
 }
 
 
-RootItem* Item::findRootItem() const
+Item* Item::rootItem()
+{
+    return RootItem::instance();
+}
+
+
+Item* Item::getLocalRootItem() const
 {
     Item* current = const_cast<Item*>(this);
     while(current->parent_){
         current = current->parent_;
     }
-    return dynamic_cast<RootItem*>(current);
+    return current;
+}
+ 
+
+RootItem* Item::findRootItem() const
+{
+    return dynamic_cast<RootItem*>(getLocalRootItem());
+}
+
+
+bool Item::isConnectedToRoot() const
+{
+    return findRootItem() != nullptr;
 }
 
 
@@ -550,7 +567,7 @@ Item* Item::duplicate() const
     Item* duplicated = doDuplicate();
     if(duplicated && (typeid(*duplicated) != typeid(*this))){
         delete duplicated;
-        duplicated = 0;
+        duplicated = nullptr;
     }
     return duplicated;
 }
@@ -597,7 +614,7 @@ Item* Item::duplicateAllSub(Item* duplicated) const
 */
 Item* Item::doDuplicate() const
 {
-    return 0;
+    return nullptr;
 }
 
 
@@ -671,20 +688,68 @@ bool Item::overwrite(bool forceOverwrite, const std::string& format)
 }
 
 
+const std::string& Item::filePath() const
+{
+    return filePath_;
+}
+
+
+const std::string& Item::fileFormat() const
+{
+    return fileFormat_;
+}
+
+
+#ifdef CNOID_BACKWARD_COMPATIBILITY
+const std::string& Item::lastAccessedFilePath() const
+{
+    return filePath_;
+}
+
+
+const std::string& Item::lastAccessedFileFormatId() const
+{
+    return fileFormat_;
+}
+#endif
+
+
+std::time_t Item::fileModificationTime() const
+{
+    return fileModificationTime_;
+}
+
+
+bool Item::isConsistentWithFile() const
+{
+    return isConsistentWithFile_;
+}
+
+
+void Item::setConsistentWithFile(bool isConsistent)
+{
+    isConsistentWithFile_ = isConsistent;
+}
+
+
+void Item::suggestFileUpdate()
+{
+    isConsistentWithFile_ = false;
+}
+
+
 void Item::updateFileInformation(const std::string& filename, const std::string& format)
 {
     filesystem::path fpath(filename);
     if(filesystem::exists(fpath)){
-        filePath_ = filename;
-        fileFormat_ = format;
-        fileModificationTime_ = filesystem::last_write_time(fpath);
+        fileModificationTime_ = filesystem::last_write_time_to_time_t(fpath);
         isConsistentWithFile_ = true;
     } else {
-        filePath_.clear();
-        fileFormat_.clear();
         fileModificationTime_ = 0;
         isConsistentWithFile_ = false;
-    }
+    }        
+    filePath_ = filename;
+    fileFormat_ = format;
 }
 
 

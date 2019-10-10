@@ -29,6 +29,15 @@ Link* DyLink::clone() const
 }
 
 
+void DyLink::initializeState()
+{
+    Link::initializeState();
+
+    vo_.setZero();
+    dvo_.setZero();
+}
+
+
 void DyLink::prependChild(Link* link)
 {
     if(DyLink* dyLink = dynamic_cast<DyLink*>(link)){
@@ -50,20 +59,17 @@ void DyLink::appendChild(Link* link)
 
 
 DyBody::DyBody()
+    : Body(new DyLink)
 {
 
 }
 
 
-DyBody::DyBody(const Body& org)
+Body* DyBody::doClone(BodyCloneMap* cloneMap) const
 {
-    copy(org);
-}
-
-    
-Body* DyBody::clone() const
-{
-    return new DyBody(*this);
+    auto body = new DyBody;
+    body->copyFrom(this, cloneMap);
+    return body;
 }
 
 

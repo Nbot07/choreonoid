@@ -9,7 +9,6 @@
 
 #include "LinkPath.h"
 #include "InverseKinematics.h"
-#include <cnoid/Referenced>
 #include <cnoid/EigenTypes>
 #include <functional>
 #include <memory>
@@ -17,56 +16,77 @@
 
 namespace cnoid {
 
-class JointPathIkImpl;
+class NumericalIK;
+class LinkTraverse;
+class Body;
 
 class CNOID_EXPORT JointPath : public InverseKinematics
 {
 public:
-		
+    /**
+       This function returns a joint path which may do analytical inverse kinematics
+       when the body has the analytical one for a given path.
+    */
+    static std::shared_ptr<JointPath> getCustomPath(Body* body, Link* baseLink, Link* endLink);
+    
     JointPath();
     JointPath(Link* base, Link* end);
     JointPath(Link* end);
-    virtual ~JointPath();
-
-    bool setPath(Link* base, Link* end);
-    bool setPath(Link* end);
-
-    //! Deprecated. Use "setPath()" instead of this.
-    bool find(Link* base, Link* end) { return setPath(base, end); }
-    //! Deprecated. Use "setPath()" instead of this.
-    bool find(Link* end) { return setPath(end); }
 
     bool empty() const {
-        return joints.empty();
+        return joints_.empty();
     }
 		
+    int size() const {
+        return static_cast<int>(joints_.size());
+    }
+
     int numJoints() const {
-        return joints.size();
+        return size();
     }
 		
     Link* joint(int index) const {
-        return joints[index];
+        return joints_[index];
+    }
+
+    Link* operator[] (int index) const {
+        return joints_[index];
     }
 
     Link* baseLink() const {
-        return linkPath.baseLink();
+        return linkPath_.baseLink();
     }
 
     Link* endLink() const {
-        return linkPath.endLink();
+        return linkPath_.endLink();
     }
 
     bool isJointDownward(int index) const {
         return (index >= numUpwardJointConnections);
     }
 
+    LinkPath::accessor joints() { return LinkPath::accessor(joints_); }
+    LinkPath::const_accessor joints() const { return LinkPath::const_accessor(joints_); }
+
+    typedef LinkPath::iterator iterator;
+    typedef LinkPath::const_iterator const_iterator;
+
+    iterator begin() { return joints().begin(); }
+    iterator end() { return joints().end(); }
+    const_iterator begin() const { return joints().begin(); }
+    const_iterator end() const { return joints().end(); }
+
+    LinkPath& linkPath() { return linkPath_; }
+    const LinkPath& linkPath() const { return linkPath_; }
+
     void calcForwardKinematics(bool calcVelocity = false, bool calcAcceleration = false) const {
-        linkPath.calcForwardKinematics(calcVelocity, calcAcceleration);
+        linkPath_.calcForwardKinematics(calcVelocity, calcAcceleration);
     }
 
     int indexOf(const Link* link) const;
 
-    bool isNumericalIkEnabled() const { return nuIK != 0; }
+    bool isNumericalIkEnabled() const { return numericalIK != nullptr; }
+    void setNumericalIKenabled(bool on);
 
     bool isBestEffortIKmode() const;
     void setBestEffortIKmode(bool on);
@@ -89,40 +109,21 @@ public:
     // For the path customized by the customizeTarget function
     bool calcInverseKinematics();
 
-    // InverseKinematics Interface
-    virtual bool hasAnalyticalIK() const;
-
     JointPath& storeCurrentPosition();
 
     JointPath& setBaseLinkGoal(const Position& T);
 
-
     virtual bool calcInverseKinematics(const Position& T) override;
-
-    /*
-    bool calcNumericalIK() {
-        return JointPath::calcInverseKinematics();
-    }
-    */
+    virtual bool calcRemainingPartForwardKinematicsForInverseKinematics() override;
 
     int numIterations() const;
 
-    /*
-    JointPath& setGoal(const Vector3& end_p, const Matrix3& end_R) {
-        targetTranslationGoal = end_p;
-        targetRotationGoal = end_R;
-        return *this;
-    }
-    */
-
-    //! deprecated
-    //JointPath& setGoal(const Vector3& base_p, const Matrix3& base_R, const Vector3& end_p, const Matrix3& end_R);
+    virtual bool hasCustomIK() const;
 
     //! deprecated
     bool calcInverseKinematics(const Vector3& p, const Matrix3& R) {
         return InverseKinematics::calcInverseKinematics(p, R);
     }
-    
     //! deprecated
     bool calcInverseKinematics(
         const Vector3& base_p, const Matrix3& base_R, const Vector3& end_p, const Matrix3& end_R);
@@ -133,35 +134,32 @@ public:
     //! deprecated
     static double numericalIKdefaultTruncateRatio();
 
-protected:
-		
-    virtual void onJointPathUpdated();
+    //! deprecated. Use hasCustomIK() insted of this.
+    bool hasAnalyticalIK() const;
 
 private:
-
     JointPath(const JointPath& org);
-		
     void initialize();
     void extractJoints();
-    JointPathIkImpl* getOrCreateNumericalIK();
+    void doResetWhenJointPathUpdated();
+    NumericalIK* getOrCreateNumericalIK();
 
-    LinkPath linkPath;
-    std::vector<Link*> joints;
+    LinkPath linkPath_;
+    std::vector<Link*> joints_;
     int numUpwardJointConnections;
     bool needForwardKinematicsBeforeIK;
-    JointPathIkImpl* nuIK; // numerical IK
+    NumericalIK* numericalIK;
+    std::shared_ptr<LinkTraverse> remainingLinkTraverse;
 };
 
+//! \deprecated Use JointPath::getCustomPath instead of this.
+inline std::shared_ptr<JointPath> getCustomJointPath(Body* body, Link* baseLink, Link* endLink){
+    return JointPath::getCustomPath(body, baseLink, endLink);
+}
+
+#ifdef CNOID_BACKWARD_COMPATIBILITY
 typedef std::shared_ptr<JointPath> JointPathPtr;
-
-class Body;
-
-/**
-   This function returns a joint path which may do analytical inverse kinematics
-   when the body has the analytical one for a given path.
-   \todo move back this function to the Body class
-*/
-CNOID_EXPORT JointPathPtr getCustomJointPath(Body* body, Link* baseLink, Link* targetLink);
+#endif
 
 }
 

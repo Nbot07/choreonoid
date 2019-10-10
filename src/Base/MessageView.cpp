@@ -46,6 +46,7 @@ struct StdioInfo {
 
 enum MvCommand { MV_PUT, MV_CLEAR };
 
+
 class MessageViewEvent : public QEvent
 {
 public:
@@ -80,6 +81,8 @@ public:
     MessageViewImpl* viewImpl;
     TextEditEx(MessageViewImpl* viewImpl) : viewImpl(viewImpl) { }
     virtual void keyPressEvent(QKeyEvent* event);
+    virtual void resizeEvent(QResizeEvent* event);
+    bool isLatestMessageVisible();
 };
 
 
@@ -176,6 +179,23 @@ void TextEditEx::keyPressEvent(QKeyEvent* event)
 }
 
 
+void TextEditEx::resizeEvent(QResizeEvent* event)
+{
+    bool isLatest = isLatestMessageVisible();
+    TextEdit::resizeEvent(event);
+    if(isLatest){
+        moveCursor(QTextCursor::End);
+    }
+}
+
+
+bool TextEditEx::isLatestMessageVisible()
+{
+    int scrollPos = getScrollPos();
+    return (scrollPos > maxScrollPos() - 3 * scrollSingleStep());
+}
+    
+
 void MessageView::initializeClass(ExtensionManager* ext)
 {
     messageView = ext->viewManager().registerClass<MessageView>(
@@ -226,6 +246,7 @@ MessageViewImpl::MessageViewImpl(MessageView* self) :
     textEdit.setTextInteractionFlags(
         Qt::TextSelectableByMouse | Qt::TextSelectableByKeyboard);
     textEdit.setWordWrapMode(QTextOption::WrapAnywhere);
+    textEdit.setSizeAdjustPolicy(QAbstractScrollArea::AdjustIgnored);
 
     QHBoxLayout* layout = new QHBoxLayout();
     layout->addWidget(&textEdit);
@@ -286,49 +307,19 @@ void MessageView::endStdioRedirect()
 }
 
 
-void MessageView::put(const char* message)
-{
-    impl->put(message, false, false, false);
-}
-
-
-void MessageView::put(const std::string& message)
-{
-    impl->put(message.c_str(), false, false, false);
-}
-
-
-void MessageView::put(const boost::format& message)
-{
-    impl->put(message.str().c_str(), false, false, false);
-}
-
-
-void MessageView::put(const QString& message)
-{
-    impl->put(message, false, false, false);
-}
-
-
-void MessageView::put(int type, const char* message)
+void MessageView::put(const char* message, int type)
 {
     impl->put(type, message, false, false, false);
 }
 
 
-void MessageView::put(int type, const std::string& message)
+void MessageView::put(const std::string& message, int type)
 {
     impl->put(type, message.c_str(), false, false, false);
 }
 
 
-void MessageView::put(int type, const boost::format& message)
-{
-    impl->put(type, message.str().c_str(), false, false, false);
-}
-
-
-void MessageView::put(int type, const QString& message)
+void MessageView::put(const QString& message, int type)
 {
     impl->put(type, message, false, false, false);
 }
@@ -340,75 +331,81 @@ void MessageView::putln()
 }
 
 
-void MessageView::putln(const std::string& message)
+void MessageView::putln(const std::string& message, int type)
 {
-    impl->put(message.c_str(), true, false, false);
+    impl->put(type, message.c_str(), true, false, false);
 }
 
 
-void MessageView::putln(const boost::format& message)
+void MessageView::putln(const char* message, int type)
 {
-    impl->put(message.str().c_str(), true, false, false);
+    impl->put(type, message, true, false, false);
 }
 
 
-void MessageView::putln(const char* message)
+void MessageView::putln(const QString& message, int type)
 {
-    impl->put(message, true, false, false);
+    impl->put(type, message, true, false, false);
 }
 
 
-void MessageView::putln(const QString& message)
+void MessageView::notify(const std::string& message, int type)
 {
-    impl->put(message, true, false, false);
+    impl->put(type, message.c_str(), true, true, false);
 }
 
 
+void MessageView::notify(const char* message, int type)
+{
+    impl->put(type, message, true, true, false);
+}
+
+
+void MessageView::notify(const QString& message, int type)
+{
+    impl->put(type, message, true, true, false);
+}
+
+
+//! \deprecated
+void MessageView::put(int type, const char* message)
+{
+    impl->put(type, message, false, false, false);
+}
+
+
+//! \deprecated
+void MessageView::put(int type, const std::string& message)
+{
+    impl->put(type, message.c_str(), false, false, false);
+}
+
+
+//! \deprecated
+void MessageView::put(int type, const QString& message)
+{
+    impl->put(type, message, false, false, false);
+}
+
+
+//! \deprecated
 void MessageView::putln(int type, const char* message)
 {
     impl->put(type, message, true, false, false);
 }
 
 
+//! \deprecated
 void MessageView::putln(int type, const std::string& message)
 {
     impl->put(type, message.c_str(), true, false, false);
 }
 
 
-void MessageView::putln(int type, const boost::format& message)
-{
-    impl->put(type, message.str().c_str(), true, false, false);
-}
-
-
+//! \deprecated
 void MessageView::putln(int type, const QString& message)
 {
     impl->put(type, message, true, false, false);
-}
-
-
-void MessageView::notify(const std::string& message)
-{
-    impl->put(message.c_str(), true, true, false);
-}
-
-
-void MessageView::notify(const boost::format& message)
-{
-    impl->put(message.str().c_str(), true, true, false);
-}
-
-
-void MessageView::notify(const char* message)
-{
-    impl->put(message, true, true, false);
-}
-
-
-void MessageView::notify(const QString& message)
-{
-    impl->put(message, true, true, false);
 }
 
 
@@ -445,10 +442,8 @@ void MessageViewImpl::put(int type, const QString& message, bool doLF, bool doNo
 
 void MessageViewImpl::doPut(const QString& message, bool doLF, bool doNotify, bool doFlush)
 {
-    
-    int scrollPos = textEdit.getScrollPos();
-    bool enableScroll = (scrollPos > textEdit.maxScrollPos()-3*textEdit.scrollSingleStep());
-    if(enableScroll){
+    bool isLatestMessageVisible = textEdit.isLatestMessageVisible();
+    if(isLatestMessageVisible){
         textEdit.moveCursor(QTextCursor::End);
     }
 
@@ -466,7 +461,7 @@ void MessageViewImpl::doPut(const QString& message, bool doLF, bool doNotify, bo
     }
     insertPlainText(txt, doLF);
 
-    if(enableScroll){
+    if(isLatestMessageVisible){
         textEdit.ensureCursorVisible();
     }
     
@@ -541,20 +536,8 @@ void MessageView::flush()
 void MessageViewImpl::flush()
 {
     if(QThread::currentThreadId() == mainThreadId){
-
         ++flushingRef;
-
-        const int maxTime = 10;
-        
-#if defined(Q_OS_WIN32) || defined(Q_OS_MAC)
-        QCoreApplication::processEvents(QEventLoop::ExcludeUserInputEvents, maxTime);
-        //QCoreApplication::processEvents();
-#else
-        //QCoreApplication::processEvents(QEventLoop::ExcludeUserInputEvents);
-        //while(QCoreApplication::hasPendingEvents()){
-        QCoreApplication::processEvents(QEventLoop::AllEvents, maxTime);
-        //}
-#endif
+        QCoreApplication::processEvents(QEventLoop::ExcludeUserInputEvents|QEventLoop::ExcludeSocketNotifiers, 1.0);
         --flushingRef;
         if(flushingRef == 0){
             sigFlushFinished_();
@@ -1043,12 +1026,6 @@ void cnoid::showMessageBox(const std::string& message)
 }
 
 
-void cnoid::showMessageBox(const boost::format& message)
-{
-    showMessageBox(QString(message.str().c_str()));
-}
-
-
 void cnoid::showWarningDialog(const QString& message)
 {
     QMessageBox::warning(MainWindow::instance(), _("Warning"), message);
@@ -1062,12 +1039,6 @@ void cnoid::showWarningDialog(const char* message)
 void cnoid::showWarningDialog(const std::string& message)
 {
     showWarningDialog(QString(message.c_str()));
-}
-
-
-void cnoid::showWarningDialog(const boost::format& message)
-{
-    showWarningDialog(QString(message.str().c_str()));
 }
 
 

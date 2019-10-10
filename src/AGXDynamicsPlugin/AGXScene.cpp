@@ -1,4 +1,5 @@
 #include "AGXScene.h"
+#include <agx/version.h>
 
 namespace cnoid{
 
@@ -17,9 +18,18 @@ void AGXScene::clear(){
     if(sim) sim->cleanup(agxSDK::Simulation::CLEANUP_ALL);
 }
 
+void AGXScene::setMainWorkThread()
+{
+#if AGX_VERSION_GREATER_OR_EQUAL(2 ,21, 0, 0)
+    agx::Thread::registerAsAgxThread();
+    getSimulation()->setMainWorkThread(agx::Thread::getCurrentThread());
+#else
+    agx::Thread::makeCurrentThreadMainThread();
+#endif
+}
+
 void AGXScene::stepSimulation()
 {
-    agx::Thread::makeCurrentThreadMainThread();
     getSimulation()->stepForward();
 }
 
@@ -77,9 +87,11 @@ void AGXScene::printContactMaterialTable()
         std::cout << "[" << mat->getMaterial1()->getName() << " " << mat->getMaterial2()->getName() << "]" << std::endl;
         PRINT_MATERIAL(youngsModulus, mat->getYoungsModulus());
         PRINT_MATERIAL(restitution, mat->getRestitution());
-        PRINT_MATERIAL(damping, mat->getDamping());
+        PRINT_MATERIAL(spookDamping, mat->getDamping());
         PRINT_MATERIAL(friction, mat->getFrictionCoefficient());
+        PRINT_MATERIAL(secondaryFriction, mat->getFrictionCoefficient(agx::ContactMaterial::SECONDARY_DIRECTION));
         PRINT_MATERIAL(surfaceViscosity, mat->getSurfaceViscosity());
+        PRINT_MATERIAL(secondarySurfaceViscosity, mat->getSurfaceViscosity(agx::ContactMaterial::SECONDARY_DIRECTION));
         PRINT_MATERIAL(enableSurfaceFriction, mat->getSurfaceFrictionEnabled());
         PRINT_MATERIAL(adhesionForce, mat->getAdhesion());
         PRINT_MATERIAL(adhesivOverLap, mat->getAdhesiveOverlap());

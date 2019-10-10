@@ -6,6 +6,7 @@
 #define CNOID_PHENOMENON_PLUGIN_SCENE_RAIN_SNOW_H
 
 #include "SceneParticles.h"
+#include "ParticleSystem.h"
 
 namespace cnoid {
 
@@ -26,7 +27,13 @@ public:
     void setTop(float t) { top_ = t; }
     void setBottom(float b) { bottom_ = b; }
 
+    virtual ParticleSystem* getParticleSystem() override;
+
+    const ParticleSystem& particleSystem() const { return particleSystem_; }
+    ParticleSystem& particleSystem() { return particleSystem_; }
+
 private:
+    ParticleSystem particleSystem_;
     float radius_;
     float top_;
     float bottom_;
@@ -39,7 +46,7 @@ class SceneRain : public SceneRainSnowBase
 public:
     SceneRain();
     SceneRain(const SceneRain& org);
-    virtual SgObject* clone(SgCloneMap& cloneMap) const override;
+    virtual SgObject* doClone(SgCloneMap* cloneMap) const override;
 };
 
 
@@ -48,7 +55,7 @@ class SceneSnow : public SceneRainSnowBase
 public:
     SceneSnow();
     SceneSnow(const SceneSnow& org);
-    virtual SgObject* clone(SgCloneMap& cloneMap) const override;
+    virtual SgObject* doClone(SgCloneMap* cloneMap) const override;
 };
 
 }

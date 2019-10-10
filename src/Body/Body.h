@@ -10,14 +10,15 @@
 #include "Link.h"
 #include "ExtraJoint.h"
 #include "DeviceList.h"
-#include "MassMatrix.h"
 #include "exportdecl.h"
 
 namespace cnoid {
 
 class Body;
 class BodyImpl;
+class BodyHandler;
 class Mapping;
+class BodyCloneMap;
 class SgCloneMap;
 
 struct BodyInterface;
@@ -25,19 +26,19 @@ struct BodyCustomizerInterface;
 typedef void* BodyCustomizerHandle;
 
 typedef ref_ptr<Body> BodyPtr;
-    
 
 class CNOID_EXPORT Body : public Referenced
 {
 public:
     Body();
-    Body(const Body& org);
+    Body(const Body& org) = delete;
+    virtual ~Body();
 
-    virtual Body* clone() const;
+    void copyFrom(const Body* org, BodyCloneMap* cloneMap = nullptr);
+    Body* clone() const { return doClone(nullptr); }
+    Body* clone(BodyCloneMap& cloneMap) const { return doClone(&cloneMap); }
 
     virtual Link* createLink(const Link* org = 0) const;
-
-    virtual ~Body();
 
     const std::string& name() const;
     void setName(const std::string& name);
@@ -53,7 +54,51 @@ public:
     */
     void updateLinkTree();
 
-    void initializeState();
+    void initializePosition();
+    virtual void initializeState();
+
+    /**
+       The number of all the links the body has.
+       The value corresponds to the size of the sequence obtained by link() function.
+    */
+    int numLinks() const {
+        return linkTraverse_.numLinks();
+    }
+
+    /**
+       This function returns the link of a given index in the whole link sequence.
+       The order of the sequence corresponds to a link-tree traverse from the root link.
+       The size of the sequence can be obtained by numLinks().
+    */
+    Link* link(int index) const {
+        return linkTraverse_.link(index);
+    }
+
+    /**
+       LinkTraverse object that traverses all the links from the root link
+    */
+    const LinkTraverse& linkTraverse() const {
+        return linkTraverse_;
+    }
+
+    const LinkTraverse& links() const {
+        return linkTraverse_;
+    }
+    
+    /**
+       This function returns a link object whose name of Joint node matches a given name.
+       Null is returned when the body has no joint of the given name.
+    */
+    Link* link(const std::string& name) const;
+
+    /**
+       The root link of the body
+    */
+    Link* rootLink() const {
+        return rootLink_;
+    }
+
+    Link* findUniqueEndLink() const;
 
     /**
        The number of the links that are actual joints.
@@ -95,54 +140,25 @@ public:
         return jointIdToLinkArray[id];
     }
 
-    class JointAccessor {
-        typedef std::vector<LinkPtr> Container;
-        Container& joints;
-        size_t size;
+    template<class Container> class ContainerWrapper {
     public:
-        JointAccessor(std::vector<LinkPtr>& joints, size_t size) : joints(joints), size(size) { }
-        Container::iterator begin() { return joints.begin(); }
-        Container::iterator end() { return joints.begin() + size; }
+        typedef typename Container::iterator iterator;
+        ContainerWrapper(iterator begin, iterator end) : begin_(begin), end_(end) { }
+        iterator begin() { return begin_; }
+        iterator end() { return end_; }
+    private:
+        iterator begin_;
+        iterator end_;
     };
 
-    JointAccessor joints() { return JointAccessor(jointIdToLinkArray, numActualJoints); }
-    JointAccessor allJoints() { return JointAccessor(jointIdToLinkArray, jointIdToLinkArray.size()); }
-
-    /**
-       The number of all the links the body has.
-       The value corresponds to the size of the sequence obtained by link() function.
-    */
-    int numLinks() const {
-        return linkTraverse_.numLinks();
-    }
-
-    /**
-       This function returns the link of a given index in the whole link sequence.
-       The order of the sequence corresponds to a link-tree traverse from the root link.
-       The size of the sequence can be obtained by numLinks().
-    */
-    Link* link(int index) const {
-        return linkTraverse_.link(index);
-    }
-
-    /**
-       LinkTraverse object that traverses all the links from the root link
-    */
-    const LinkTraverse& linkTraverse() const {
-        return linkTraverse_;
+    ContainerWrapper<std::vector<LinkPtr>> joints() {
+        return ContainerWrapper<std::vector<LinkPtr>>(
+            jointIdToLinkArray.begin(), jointIdToLinkArray.begin() + numActualJoints);
     }
     
-    /**
-       This function returns a link object whose name of Joint node matches a given name.
-       Null is returned when the body has no joint of the given name.
-    */
-    Link* link(const std::string& name) const;
-
-    /**
-       The root link of the body
-    */
-    Link* rootLink() const {
-        return rootLink_;
+    ContainerWrapper<std::vector<LinkPtr>> allJoints() {
+        return ContainerWrapper<std::vector<LinkPtr>>(
+            jointIdToLinkArray.begin(), jointIdToLinkArray.end());
     }
 
     int numDevices() const {
@@ -169,11 +185,19 @@ public:
         return dynamic_cast<DeviceType*>(findDeviceSub(name));
     }
 
+    template<class DeviceType> DeviceType* findDevice() const {
+        for(auto& device : devices_)
+            if(auto found = dynamic_cast<DeviceType*>(device.get()))
+                return found;
+        return nullptr;
+    }
+
     Device* findDevice(const std::string& name) const {
         return findDeviceSub(name);
     }
     
-    void addDevice(Device* device);
+    void addDevice(Device* device, Link* link);
+    void addDevice(Device* device); //! \deprecated
     void initializeDeviceStates();
     void clearDevices();
 
@@ -215,7 +239,7 @@ public:
 
     void cloneShapes(SgCloneMap& cloneMap);
         
-    template<class T> T* findCache(const std::string& name) {
+    template<class T> T* findCache(const std::string& name){
         return dynamic_cast<T*>(findCacheSub(name));
     }
 
@@ -223,7 +247,7 @@ public:
         return dynamic_cast<const T*>(findCacheSub(name));
     }
 
-    template<class T> T* getOrCreateCache(const std::string& name) {
+    template<class T> T* getOrCreateCache(const std::string& name){
         T* cache = findCache<T>(name);
         if(!cache){
             cache = new T();
@@ -232,24 +256,37 @@ public:
         return cache;
     }
 
+    void setCache(const std::string& name, Referenced* cache){
+        insertCache(name, cache);
+    }
+
     bool getCaches(PolymorphicReferencedArrayBase<>& out_caches, std::vector<std::string>& out_names) const;
 
     void removeCache(const std::string& name);
 
+    void setCurrentTimeFunction(std::function<double()> func);
+    double currentTime() const { return currentTimeFunction(); }
+
+    bool addHandler(BodyHandler* handler, bool isTopPriority = false);
+
+    template<class BodyHandlerType> BodyHandlerType* findHandler(){
+        return dynamic_cast<BodyHandlerType*>(
+            findHandler([](BodyHandler* handler)->bool{ return dynamic_cast<BodyHandlerType*>(handler); }));
+    }
+    
+    // The following functions for the body customizer are deprecated
     BodyCustomizerHandle customizerHandle() const;
     BodyCustomizerInterface* customizerInterface() const;
-
     bool installCustomizer();
     bool installCustomizer(BodyCustomizerInterface* customizerInterface);
-
     bool hasVirtualJointForces() const;
-    void setVirtualJointForces();
-
+    void setVirtualJointForces(double timeStep = 0.0);
     static void addCustomizerDirectory(const std::string& path);
     static BodyInterface* bodyInterface();
 
 protected:
-    void copy(const Body& org);
+    Body(Link* rootLink);
+    virtual Body* doClone(BodyCloneMap* cloneMap) const;
 
 private:
     LinkTraverse linkTraverse_;
@@ -259,16 +296,18 @@ private:
     int numActualJoints;
     DeviceList<> devices_;
     std::vector<ExtraJoint> extraJoints_;
+    std::function<double()> currentTimeFunction;
     BodyImpl* impl;
 
     void initialize();
-    Link* cloneLinkTree(const Link* orgLink);
+    Link* cloneLinkTree(const Link* orgLink, BodyCloneMap* cloneMap);
     Link* createEmptyJoint(int jointId);
     Device* findDeviceSub(const std::string& name) const;
     Referenced* findCacheSub(const std::string& name);
     const Referenced* findCacheSub(const std::string& name) const;
     void insertCache(const std::string& name, Referenced* cache);
-    void setVirtualJointForcesSub();
+    BodyHandler* findHandler(std::function<bool(BodyHandler*)> isTargetHandlerType);
+    void setVirtualJointForcesSub(); // deprecated
 };
 
 }

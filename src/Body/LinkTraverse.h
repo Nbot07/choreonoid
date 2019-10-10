@@ -17,6 +17,8 @@ class Link;
 class CNOID_EXPORT LinkTraverse
 {
 public:
+    typedef std::vector<Link*> container;
+    
     LinkTraverse();
     LinkTraverse(int size);
     LinkTraverse(Link* root, bool doUpward = false, bool doDownward = true);
@@ -30,37 +32,63 @@ public:
 
     void append(Link* link, bool isDownward = true);
 
+    bool remove(Link* link);
+
+    //! @return prepended link
+    Link* prependRootAdjacentLinkToward(Link* link);
+
     int numLinks() const {
-        return static_cast<int>(links.size());
+        return static_cast<int>(links_.size());
     }
 
     bool empty() const {
-        return links.empty();
+        return links_.empty();
     }
 
     std::size_t size() const {
-        return links.size();
+        return links_.size();
     }
 
     Link* rootLink() const {
-        return (links.empty() ? 0 : links.front());
+        return (links_.empty() ? nullptr : links_.front());
     }
 
     Link* link(int index) const {
-        return links[index];
+        return links_[index];
     }
 
     Link* operator[] (int index) const {
-        return links[index];
-    }
-    
-    std::vector<Link*>::const_iterator begin() const {
-        return links.begin();
+        return links_[index];
     }
 
-    std::vector<Link*>::const_iterator end() const {
-        return links.end();
-    }
+    class accessor {
+        container& links;
+    public:
+        accessor(container& links) : links(links) { }
+        container::iterator begin() { return links.begin(); }
+        container::iterator end() { return links.end(); }
+        container::reverse_iterator rbegin() { return links.rbegin(); }
+        container::reverse_iterator rend() { return links.rend(); }
+    };
+    class const_accessor {
+        const container& links;
+    public:
+        const_accessor(const container& links) : links(links) { }
+        container::const_iterator begin() const { return links.begin(); }
+        container::const_iterator end() const { return links.end(); }
+        container::const_reverse_iterator rbegin() const { return links.rbegin(); }
+        container::const_reverse_iterator rend() const { return links.rend(); }
+    };
+
+    accessor links(){ return accessor(links_); }
+    const_accessor links() const { return const_accessor(links_); }
+
+    typedef container::iterator iterator;
+    typedef container::const_iterator const_iterator;
+    iterator begin() { return links().begin(); }
+    iterator end() { return links().end(); }
+    const_iterator begin() const { return links().begin(); }
+    const_iterator end() const { return links().end(); }
 	
     /**
        If the connection from the queried link to the next link is downward (forward) direction,
@@ -74,11 +102,12 @@ public:
     void calcForwardKinematics(bool calcVelocity = false, bool calcAcceleration = false) const;
 
 protected:
-    std::vector<Link*> links;
+    std::vector<Link*> links_;
     int numUpwardConnections;
 
 private:
     void traverse(Link* link, bool doUpward, bool doDownward, bool isUpward, Link* prev);
+    Link* findRootAdjacentLink(Link* link, Link* prev, Link* root, bool& isUpward);
 };
 
 }

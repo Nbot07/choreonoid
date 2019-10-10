@@ -7,6 +7,7 @@
 #include "SceneFountain.h"
 #include "ParticlesProgram.h"
 #include <cnoid/EigenUtil>
+#include <cnoid/GLSLProgram>
 
 using namespace std;
 using namespace cnoid;
@@ -18,13 +19,22 @@ class FountainProgram : public ParticlesProgram
 public:
     FountainProgram(GLSLSceneRenderer* renderer);
     virtual bool initializeRendering(SceneParticles* particles) override;
+    void updateParticleBuffers(SceneFountain* fountain);
     void render(SceneFountain* fountain);
 
     GLint lifeTimeLocation;
     GLint accelLocation;
-    GLuint nParticles;
-    GLuint initVelBuffer;
-    GLuint offsetTimeBuffer;
+
+    // Variables to detect changes causing the buffer update
+    int numParticles;
+    float lifeTime;
+    float emissionRange;
+    float initialSpeedAverage;
+    float initialSpeedVariation;
+
+    GLuint& initVelBuffer;
+    GLuint& offsetTimeBuffer;
+    GLuint buffers[2];
     GLuint vertexArray;
 };
 
@@ -42,32 +52,37 @@ struct Registration {
 SceneFountain::SceneFountain()
     : SceneParticles(findPolymorphicId<SceneFountain>())
 {
-    angle_ = 0.1f;
-    lifeTime_ = 3.0f;
-    acceleration_ << 0.0f, 0.0f, -0.2f;
-
-    setParticleSize(0.06f);
     setTexture(":/SceneEffectsPlugin/texture/bluewater.png");
 }
 
 
 SceneFountain::SceneFountain(const SceneFountain& org)
-    : SceneParticles(org)
+    : SceneParticles(org),
+      particleSystem_(org.particleSystem_)
 {
-    angle_ = org.angle_;
-    lifeTime_ = org.lifeTime_;
-    acceleration_ = org.acceleration_;
+
 }
 
 
-SgObject* SceneFountain::clone(SgCloneMap& cloneMap) const
+SgObject* SceneFountain::doClone(SgCloneMap*) const
 {
     return new SceneFountain(*this);
 }
 
 
+ParticleSystem* SceneFountain::getParticleSystem()
+{
+    return &particleSystem_;
+}
+
+
 FountainProgram::FountainProgram(GLSLSceneRenderer* renderer)
-    : ParticlesProgram(renderer)
+    : ParticlesProgram(
+        renderer,
+        ":/SceneEffectsPlugin/shader/Fountain.vert",
+        ":/SceneEffectsPlugin/shader/Particles.frag"),
+      initVelBuffer(buffers[0]),
+      offsetTimeBuffer(buffers[1])
 {
 
 }
@@ -75,55 +90,67 @@ FountainProgram::FountainProgram(GLSLSceneRenderer* renderer)
 
 bool FountainProgram::initializeRendering(SceneParticles* particles)
 {
-    loadVertexShader(":/SceneEffectsPlugin/shader/Fountain.vert");
-    loadFragmentShader(":/SceneEffectsPlugin/shader/Particles.frag");
-    link();
-    
     if(!ParticlesProgramBase::initializeRendering(particles)){
         return false;
     }
-    auto fountain = static_cast<SceneFountain*>(particles);
 
-    nParticles = 10000;
+    auto& glsl = glslProgram();
+    lifeTimeLocation = glsl.getUniformLocation("lifeTime");
+    accelLocation = glsl.getUniformLocation("accel");
+
+    glGenBuffers(2, buffers);
+    glGenVertexArrays(1, &vertexArray);
+
+    SceneFountain* fountain = static_cast<SceneFountain*>(particles);
+    updateParticleBuffers(fountain);
+
+    return true;
+}
+
+
+void FountainProgram::updateParticleBuffers(SceneFountain* fountain)
+{
+    auto& ps = fountain->particleSystem();
+    numParticles = ps.numParticles();
+    emissionRange = ps.emissionRange();
+    initialSpeedAverage = ps.initialSpeedAverage();
+    initialSpeedVariation = ps.initialSpeedVariation();
 
     // Fill the first velocity buffer with random velocities
     Vector3f v;
-    float velocity, theta, phi;
-    vector<GLfloat> data(nParticles * 3);
-    for(GLuint i = 0; i < nParticles; ++i) {
+    float speed, theta, phi;
+    vector<GLfloat> data(numParticles * 3);
+    for(GLuint i = 0; i < numParticles; ++i) {
         
-        theta = PI / 12.0f * random();
-        phi = 2.0 * PI * random();
+        theta = emissionRange / 2.0f * frandom();
+        phi = 2.0 * PI * frandom();
 
         v.x() = sinf(theta) * cosf(phi);
         v.y() = sinf(theta) * sinf(phi);
         v.z() = cosf(theta);
 
-        velocity = 1.25f + (1.5f - 1.25f) * random();
-        v = v.normalized() * velocity;
+        speed = std::max(0.0f, initialSpeedAverage + initialSpeedVariation * (frandom() - 0.5f));
+        v = v.normalized() * speed;
 
         data[3*i]   = v.x();
         data[3*i+1] = v.y();
         data[3*i+2] = v.z();
     }
-    glGenBuffers(1, &initVelBuffer);
     glBindBuffer(GL_ARRAY_BUFFER, initVelBuffer);
     glBufferData(GL_ARRAY_BUFFER, data.size() * sizeof(float), &data.front(), GL_STATIC_DRAW);
     
     // Fill the offset time buffer
-    data.resize(nParticles);
-    float rate = fountain->lifeTime() / nParticles;
+    data.resize(numParticles);
+    float rate = ps.lifeTime() / numParticles;
     float time = 0.0f;
-    for(GLuint i = 0; i < nParticles; ++i) {
+    for(GLuint i = 0; i < numParticles; ++i) {
         data[i] = time;
         time += rate;
     }
-    glGenBuffers(1, &offsetTimeBuffer);
     glBindBuffer(GL_ARRAY_BUFFER, offsetTimeBuffer);
     glBufferData(GL_ARRAY_BUFFER, data.size() * sizeof(float), &data.front(), GL_STATIC_DRAW);
     glBindBuffer(GL_ARRAY_BUFFER, 0);
 
-    glGenVertexArrays(1, &vertexArray);
     glBindVertexArray(vertexArray);
     glBindBuffer(GL_ARRAY_BUFFER, initVelBuffer);
     glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 0, NULL);
@@ -132,20 +159,30 @@ bool FountainProgram::initializeRendering(SceneParticles* particles)
     glVertexAttribPointer(1, 1, GL_FLOAT, GL_FALSE, 0, NULL);
     glEnableVertexAttribArray(1);
     glBindVertexArray(0);
-
-    lifeTimeLocation = getUniformLocation("lifeTime");
-    accelLocation = getUniformLocation("accel");
-
-    return true;
 }
 
 
 void FountainProgram::render(SceneFountain* fountain)
 {
-    setTime(fountain->time());
-    glUniform1f(lifeTimeLocation, fountain->lifeTime());
-    Vector3f accel = globalAttitude().transpose() * fountain->acceleration();
+    auto& ps = fountain->particleSystem();
+
+    if(!ps.on()){
+        return;
+    }
+    
+    if(numParticles != ps.numParticles() ||
+       lifeTime != ps.lifeTime() ||
+       emissionRange != ps.emissionRange() ||
+       initialSpeedAverage != ps.initialSpeedAverage() ||
+       initialSpeedVariation != ps.initialSpeedVariation()){
+        updateParticleBuffers(fountain);
+    }
+    
+    setTime(fountain->time() + ps.offsetTime());
+    glUniform1f(lifeTimeLocation, ps.lifeTime());
+    Vector3f accel = globalAttitude().transpose() * ps.acceleration();
     glUniform3fv(accelLocation, 1, accel.data());
+    
     glBindVertexArray(vertexArray);
-    glDrawArrays(GL_POINTS, 0, nParticles);
+    glDrawArrays(GL_POINTS, 0, ps.numParticles());
 }

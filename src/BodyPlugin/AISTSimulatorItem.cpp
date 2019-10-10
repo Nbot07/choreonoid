@@ -2,13 +2,6 @@
   @file
   @author Shin'ichiro Nakaoka
 */
-#ifdef WIN32
-#include <boost/version.hpp>
-#if (BOOST_VERSION >= 105900) 
-#define BOOST_NO_CXX11_ALLOCATOR
-#endif
-#endif
-
 #include "AISTSimulatorItem.h"
 #include "WorldItem.h"
 #include "BodyItem.h"
@@ -25,7 +18,7 @@
 #include <cnoid/EigenUtil>
 #include <cnoid/MessageView>
 #include <cnoid/IdPair>
-#include <boost/lexical_cast.hpp>
+#include <fmt/format.h>
 #include <mutex>
 #include <iomanip>
 #include <fstream>
@@ -33,7 +26,7 @@
 
 using namespace std;
 using namespace cnoid;
-using boost::format;
+using fmt::format;
 
 // for Windows
 #undef min
@@ -106,10 +99,7 @@ public:
     typedef std::map<Body*, int> BodyIndexMap;
     BodyIndexMap bodyIndexMap;
 
-    typedef std::map<Link*, Link*> LinkMap;
-    LinkMap orgLinkToInternalLinkMap;
-
-    boost::optional<int> forcedBodyPositionFunctionId;
+    stdx::optional<int> forcedBodyPositionFunctionId;
     std::mutex forcedBodyPositionMutex;
     DyBody* forcedPositionBody;
     Position forcedBodyPosition;
@@ -119,6 +109,7 @@ public:
     bool initializeSimulation(const std::vector<SimulationBody*>& simBodies);
     void addBody(AISTSimBody* simBody);
     void clearExternalForces();
+    void stepKinematicsSimulation(const std::vector<SimulationBody*>& activeSimBodies);
     void setForcedPosition(BodyItem* bodyItem, const Position& T);
     void doSetForcedPosition();
     void doPutProperties(PutPropertyFunction& putProperty);
@@ -348,7 +339,6 @@ Item* AISTSimulatorItem::doDuplicate() const
 
 bool AISTSimulatorItem::startSimulation(bool doReset)
 {
-    impl->orgLinkToInternalLinkMap.clear();
     return SimulatorItem::startSimulation(doReset);
 }
 
@@ -356,11 +346,18 @@ bool AISTSimulatorItem::startSimulation(bool doReset)
 SimulationBody* AISTSimulatorItem::createSimulationBody(Body* orgBody)
 {
     SimulationBody* simBody = 0;
-    DyBody* body = new DyBody(*orgBody);
+    DyBody* body = new DyBody;
+    body->copyFrom(orgBody);
 
     const int n = orgBody->numLinks();
     for(int i=0; i < n; ++i){
-        impl->orgLinkToInternalLinkMap[orgBody->link(i)] = body->link(i);
+        auto link = body->link(i);
+        if(link->isFreeJoint() && !link->isRoot()){
+            MessageView::instance()->putln(
+                format(_("The joint {0} of {1} is a free joint. AISTSimulator does not allow for a free joint except for the root link."),
+                       link->name(), body->name(), MessageView::WARNING));
+            link->setJointType(Link::FIXED_JOINT);
+        }
     }
     
     if(impl->dynamicsMode.is(KINEMATICS) && impl->isKinematicWalkingEnabled){
@@ -387,7 +384,7 @@ bool AISTSimulatorItemImpl::initializeSimulation(const std::vector<SimulationBod
 {
     if(ENABLE_DEBUG_OUTPUT){
         static int ntest = 0;
-        os.open((string("test-log-") + boost::lexical_cast<string>(ntest++) + ".log").c_str());
+        os.open((string("test-log-") + std::to_string(ntest++) + ".log").c_str());
         os << setprecision(30);
     }
 
@@ -419,7 +416,8 @@ bool AISTSimulatorItemImpl::initializeSimulation(const std::vector<SimulationBod
     }
 
     if(!highGainDynamicsList.empty()){
-        mvout() << (format(_("%1% uses the ForwardDynamicsCBM module to perform the high-gain control.")) % self->name()) << endl;
+        mvout() << format(_("{} uses the ForwardDynamicsCBM module to perform the high-gain control."),
+                          self->name()) << endl;
     }
 
     cfs.setFriction(staticFriction, dynamicFriction);
@@ -442,33 +440,16 @@ void AISTSimulatorItemImpl::addBody(AISTSimBody* simBody)
 {
     DyBody* body = static_cast<DyBody*>(simBody->body());
 
-    DyLink* rootLink = body->rootLink();
-    rootLink->v().setZero();
-    rootLink->dv().setZero();
-    rootLink->w().setZero();
-    rootLink->dw().setZero();
-    rootLink->vo().setZero();
-    rootLink->dvo().setZero();
-
     bool hasHighgainJoints = false;
-
-    for(int i=0; i < body->numLinks(); ++i){
-        Link* link = body->link(i);
-        link->u() = 0.0;
-        link->dq() = 0.0;
-        link->ddq() = 0.0;
+    for(auto& link : body->links()){
         if(link->actuationMode() == Link::JOINT_DISPLACEMENT ||
            link->actuationMode() == Link::JOINT_VELOCITY ||
            link->actuationMode() == Link::LINK_POSITION){
             hasHighgainJoints = true;
         }
     }
-    
-    body->clearExternalForces();
-    body->calcForwardKinematics(true, true);
 
     int bodyIndex;
-
     if(hasHighgainJoints){
         auto dynamics = make_shared_aligned<ForwardDynamicsCBM>(body);
         highGainDynamicsList.push_back(dynamics);
@@ -491,25 +472,38 @@ void AISTSimulatorItemImpl::clearExternalForces()
 
 bool AISTSimulatorItem::stepSimulation(const std::vector<SimulationBody*>& activeSimBodies)
 {
-    if(!impl->dynamicsMode.is(KINEMATICS)){
+    switch(impl->dynamicsMode.which()){
+    case FORWARD_DYNAMICS:
         for(auto&& dynamics : impl->highGainDynamicsList){
             dynamics->complementHighGainModeCommandValues();
         }
         impl->world.calcNextState();
-        return true;
+        break;
+    case KINEMATICS:
+        impl->stepKinematicsSimulation(activeSimBodies);
+        break;
     }
+    return true;
+}
 
-    // Kinematics mode
-    if(!impl->isKinematicWalkingEnabled){
-        for(size_t i=0; i < activeSimBodies.size(); ++i){
-            activeSimBodies[i]->body()->calcForwardKinematics(true, true);
+
+void AISTSimulatorItemImpl::stepKinematicsSimulation(const std::vector<SimulationBody*>& activeSimBodies)
+{
+    for(size_t i=0; i < activeSimBodies.size(); ++i){
+        SimulationBody* simBody = activeSimBodies[i];
+        Body* body = simBody->body();
+
+        for(auto& joint : body->allJoints()){
+            joint->q() = joint->q_target();
+            joint->dq() = joint->dq_target();
         }
-    } else {
-        for(size_t i=0; i < activeSimBodies.size(); ++i){
-            SimulationBody* simBody = activeSimBodies[i];
+        
+        if(!isKinematicWalkingEnabled){
+            body->calcForwardKinematics(true, true);
+        } else {
             KinematicWalkBody* walkBody = dynamic_cast<KinematicWalkBody*>(simBody);
             if(!walkBody){
-                simBody->body()->calcForwardKinematics(true, true);
+                body->calcForwardKinematics(true, true);
             } else {
                 walkBody->traverse.calcForwardKinematics(true, true);
                 
@@ -538,7 +532,6 @@ bool AISTSimulatorItem::stepSimulation(const std::vector<SimulationBody*>& activ
             }
         }
     }
-    return true;
 }
 
 
@@ -550,7 +543,7 @@ void AISTSimulatorItem::finalizeSimulation()
 }
 
 
-CollisionLinkPairListPtr AISTSimulatorItem::getCollisions()
+std::shared_ptr<CollisionLinkPairList> AISTSimulatorItem::getCollisions()
 {
     return impl->world.constraintForceSolver.getCollisions();
 }
@@ -604,7 +597,7 @@ void AISTSimulatorItem::clearForcedPositions()
 {
     if(impl->forcedBodyPositionFunctionId){
         removePostDynamicsFunction(*impl->forcedBodyPositionFunctionId);
-        impl->forcedBodyPositionFunctionId = boost::none;
+        impl->forcedBodyPositionFunctionId = stdx::nullopt;
     }
 }
     

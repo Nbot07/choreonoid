@@ -19,6 +19,8 @@
 using namespace std;
 namespace cnoid{
 
+const int MAX_NUM_WIRE_NODES_FOR_LOG = 60;
+
 /////////////////////////////////////////////////////////////////////////
 // WireNodeState
 struct WireNodeState{
@@ -46,7 +48,6 @@ public:
     void copyStateFrom(const AGXWireDevice& other);
     virtual void copyStateFrom(const DeviceState& other) override;
     virtual DeviceState* cloneState() const override;
-    virtual Device* clone() const override;
     virtual void forEachActualType(std::function<bool(const std::type_info& type)> func) override;
     virtual int stateSize() const override;
     virtual const double* readState(const double* buf) override;
@@ -61,6 +62,10 @@ public:
     double getWireRadius();
     void addWireNodeState(const Vector3& pos);
     WireNodeStates& getWireNodeStates();
+
+protected:
+    virtual Device* doClone(BodyCloneMap* cloneMap) const override;
+    
 private:
     MappingPtr m_info;
     WireNodeStates m_wireNodeStates;
@@ -130,10 +135,10 @@ void AGXWireDevice::copyStateFrom(const DeviceState& other)
 
 DeviceState* AGXWireDevice::cloneState() const
 {
-    return new AGXWireDevice(*this, false);
+    return new AGXWireDevice(*this, true);
 }
 
-Device*AGXWireDevice::clone() const
+Device*AGXWireDevice::doClone(BodyCloneMap*) const
 {
     return new AGXWireDevice(*this);
 }
@@ -147,17 +152,52 @@ void AGXWireDevice::forEachActualType(std::function<bool(const std::type_info&ty
 
 int AGXWireDevice::stateSize() const
 {
-    return 1;
+    return 3 * MAX_NUM_WIRE_NODES_FOR_LOG + 2;
 }
 
 const double* AGXWireDevice::readState(const double* buf)
 {
-    return buf + 1;
+    int i = 0;
+    const int n = buf[i++];
+    m_wireNodeStates.resize(n);
+    int j=0;
+    while(j < n){
+        m_wireNodeStates[j].position << buf[i], buf[i+1], buf[i+2];
+        i += 3;
+        ++j;
+    }
+    i += (MAX_NUM_WIRE_NODES_FOR_LOG - j) * 3;
+    radius = buf[i++];
+    return buf + i;
 }
 
 double* AGXWireDevice::writeState(double* out_buf) const
 {
-    return out_buf + 1;
+    int i = 0;
+    const int m = m_wireNodeStates.size();
+    int n = std::min(m, MAX_NUM_WIRE_NODES_FOR_LOG);
+
+    out_buf[i++] = n;
+    
+    int j = 0;
+    int offset = (m > n) ? (m - n) : 0;
+    while(j < n){
+        const Vector3& p = m_wireNodeStates[j + offset].position;
+        out_buf[i++] = p.x();
+        out_buf[i++] = p.y();
+        out_buf[i++] = p.z();
+        ++j;
+    }
+    while(j < MAX_NUM_WIRE_NODES_FOR_LOG){
+        out_buf[i++] = 0.0;
+        out_buf[i++] = 0.0;
+        out_buf[i++] = 0.0;
+        ++j;
+    }
+    
+    out_buf[i++] = radius;
+    
+    return out_buf + i;
 }
 
 void AGXWireDevice::setDesc(const AGXWireDeviceDesc& desc)
@@ -325,7 +365,11 @@ AGXWire::AGXWire(AGXWireDevice* device, AGXBody* agxBody) :
     m_wire = AGXObjectFactory::createWire(wireDesc);
 
     {   // set Material
-        agx::Material*mat = sim->getMaterialManager()->getMaterial(wireDeviceInfo.read<string>("materialName"));
+		string matName = "";
+		agx::Material* mat = nullptr;
+		if(wireDeviceInfo.read("materialName", matName)){
+            mat = sim->getMaterialManager()->getMaterial(matName);	
+		}
         if(mat == nullptr){
             mat = sim->getMaterialManager()->getMaterial(Material::name(0));
         }
@@ -333,13 +377,13 @@ AGXWire::AGXWire(AGXWireDevice* device, AGXBody* agxBody) :
         if(wireDeviceInfo.read("wireYoungsModulusStretch", tmpMatValue)){
             mat->getWireMaterial()->setYoungsModulusStretch(tmpMatValue);
         }
-        if(wireDeviceInfo.read("wireDampingStretch", tmpMatValue)){
+        if(wireDeviceInfo.read("wireSpookDampingStretch", tmpMatValue)){
             mat->getWireMaterial()->setDampingStretch(tmpMatValue);
         }
         if(wireDeviceInfo.read("wireYoungsModulusBend", tmpMatValue)){
             mat->getWireMaterial()->setYoungsModulusBend(tmpMatValue);
         }
-        if(wireDeviceInfo.read("wireDampingBend", tmpMatValue)){
+        if(wireDeviceInfo.read("wireSpookDampingBend", tmpMatValue)){
             mat->getWireMaterial()->setDampingBend(tmpMatValue);
         }
         m_wire->setMaterial(mat);
@@ -359,7 +403,7 @@ AGXWire::AGXWire(AGXWireDevice* device, AGXBody* agxBody) :
 
         Vector3 positionInBodyFrame;
         agxConvert::setVector(wireWinchInfo.find("position"), positionInBodyFrame);
-        winchDesc.positionInBodyFrame = agxConvert::toAGX(attitude* positionInBodyFrame);   // link coord
+        winchDesc.positionInBodyFrame = agxConvert::toAGX(positionInBodyFrame);   // link coord
 
         Vector3 normalInBodyFrame;
         agxConvert::setVector(wireWinchInfo.find("normal"), normalInBodyFrame);
@@ -402,12 +446,15 @@ AGXWire::AGXWire(AGXWireDevice* device, AGXBody* agxBody) :
                 // set in world coord
                 m_wire->add(AGXObjectFactory::createWireFreeNode(transformToWorld()));
             }else if(nodeType == "fixed"){
-                if(agx::RigidBody* body = getAGXBody()->getAGXRigidBody(linkName)){
+                if(Link* const link = getAGXBody()->body()->link(linkName)){
                     // set in link coord
+                    agx::RigidBody* body = getAGXBody()->getAGXRigidBody(linkName);
+                    // reflect pose correction
+                    pos = link->Rs() * pos;
                     m_wire->add(AGXObjectFactory::createWireBodyFixedNode(body, agxConvert::toAGX(pos)));
                 }else{
                     // set in world coord
-                    m_wire->add(AGXObjectFactory::createWireBodyFixedNode(body, transformToWorld()));
+                    m_wire->add(AGXObjectFactory::createWireBodyFixedNode(nullptr, transformToWorld()));
                 }
             }else if(nodeType == "link"){
                 agx::RigidBody* wireLinkBody = getAGXBody()->getAGXRigidBody(linkName);
@@ -416,7 +463,7 @@ AGXWire::AGXWire(AGXWireDevice* device, AGXBody* agxBody) :
                 m_wire->add(wireLink, agxConvert::toAGX(pos));
                 agxWire::ILinkNodeRef iLinkNode = wireLink->getConnectingNode(m_wire);
                 if(iLinkNode){
-                    auto getILinkNodeValue = [&](string key, auto defaultValue){
+                    auto getILinkNodeValue = [&](string key, double defaultValue){
                         return wireNodeInfo.get(key, defaultValue);
                     };
                     agxWire::ILinkNode::ConnectionProperties* cp = iLinkNode->getConnectionProperties();

@@ -6,6 +6,7 @@
 #include <cnoid/BasicSensorSimulationHelper>
 #include "AGXObjectFactory.h"
 #include "AGXBodyExtension.h"
+#include <set>
 #include "exportdecl.h"
 
 namespace{
@@ -31,8 +32,8 @@ class CNOID_EXPORT AGXLink : public Referenced
 {
 public:
     AGXLink(Link* const link);
-    AGXLink(Link* const link, AGXLink* const parent, const Vector3& parentOrigin, AGXBody* const agxBody);
-    void constructAGXLink();
+    AGXLink(Link* const link, AGXLink* const parent, const Vector3& parentOrigin, AGXBody* const agxBody, std::set<Link*>& forceSensorLinks, bool makeStatic);
+    void constructAGXLink(const bool& makeStatic);
     void setAGXMaterial();
     bool setAGXMaterialFromName(const std::string& materialName);
     void setAGXMaterialFromLinkInfo();
@@ -52,6 +53,7 @@ public:
     agxCollide::Geometry*   getAGXGeometry() const;
     void                    setAGXConstraint(agx::Constraint* const constraint);
     agx::Constraint*        getAGXConstraint() const;
+    agx::Name               getCollisionGroupName() const;
     void printDebugInfo();
 
 private:
@@ -62,6 +64,7 @@ private:
     agx::RigidBodyRef       _rigid;
     agxCollide::GeometryRef _geometry;
     agx::ConstraintRef      _constraint;
+    agx::Name               _collisionGroupName;
     AGXBody*                getAGXBody();
     agx::RigidBodyRef       createAGXRigidBody();
     agxCollide::GeometryRef createAGXGeometry();
@@ -79,17 +82,20 @@ typedef std::vector<AGXLinkPtr> AGXLinkPtrs;
 class CNOID_EXPORT AGXBody :  public SimulationBody
 {
 public:
-    AGXBody(Body& orgBody);
+    AGXBody(Body* body);
     void initialize();
     void createBody(AGXScene* agxScene);
     void setCollision();
     void setCollisionExclude();
     void setCollisionExcludeLinks(const Mapping& cdMapping);
+    void setCollisionExcludeLinksDynamic(const Mapping& cdMapping);
     void setCollisionExcludeTreeDepth(const Mapping& cdMapping);
     void setCollisionExcludeLinkGroups(const Mapping& cdMapping);
     void setCollisionExcludeSelfCollisionLinks(const Mapping& cdMapping);
+    void setCollisionExcludeLinksWireCollision(const Mapping& cdMapping);
     std::string getCollisionGroupName() const;
     void enableExternalCollision(const bool& bOn);
+    void enableAGXWireContact(const bool& bOn);
     void addCollisionGroupNameToDisableCollision(const std::string& name);
     const std::vector<std::string>& getCollisionGroupNamesToDisableCollision() const;
     void addCollisionGroupNameToAllLink(const std::string& name);

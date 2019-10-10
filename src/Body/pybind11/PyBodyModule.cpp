@@ -45,38 +45,52 @@ PYBIND11_MODULE(Body, m)
         .def("lastActualBodyLoader", &BodyLoader::lastActualBodyLoader)
         ;
 
-    py::class_<JointPath, JointPathPtr>(m, "JointPath")
+    py::class_<JointPath, shared_ptr<JointPath>>(m, "JointPath")
         .def(py::init<>())
-        .def("numJoints", &JointPath::numJoints)
+        .def_property_readonly("numJoints", &JointPath::numJoints)
         .def("joint", &JointPath::joint)
-        .def("baseLink", &JointPath::baseLink)
-        .def("endLink", &JointPath::endLink)
+        .def_property_readonly("baseLink", &JointPath::baseLink)
+        .def_property_readonly("endLink", &JointPath::endLink)
         .def("indexOf", &JointPath::indexOf)
         .def("customizeTarget", &JointPath::customizeTarget)
-        .def("numIterations", &JointPath::numIterations)
+        .def_property_readonly("numIterations", &JointPath::numIterations)
         .def("calcJacobian", &JointPath::calcJacobian)
         .def("calcInverseKinematics", (bool(JointPath::*)())&JointPath::calcInverseKinematics)
         .def("calcInverseKinematics", (bool(JointPath::*)(const Position&))&JointPath::calcInverseKinematics)
+
+        // deprecated
+        .def("getNumJoints", &JointPath::numJoints)
+        .def("getJoint", &JointPath::joint)
+        .def("getBaseLink", &JointPath::baseLink)
+        .def("getEndLink", &JointPath::endLink)
+        .def("getIndexOf", &JointPath::indexOf)
+        .def("getNumIterations", &JointPath::numIterations)
         ;
 
     m.def("getCustomJointPath", getCustomJointPath);
 
-    py::class_<BodyMotion, BodyMotionPtr> bodyMotion(m, "BodyMotion");
+    py::class_<BodyMotion, shared_ptr<BodyMotion>> bodyMotion(m, "BodyMotion");
     bodyMotion
+        .def_property("numJoints", &BodyMotion::numJoints, &BodyMotion::setNumParts)
         .def("setNumJoints", &BodyMotion::setNumParts)
-        .def("numJoints", &BodyMotion::numJoints)
-        .def("numLings", &BodyMotion::numLinks)
-        .def("frameRate", &BodyMotion::frameRate)
-        .def("getFrameRate",&BodyMotion::getFrameRate)
+        .def_property_readonly("numLinks", &BodyMotion::numLinks)
+        .def_property("frameRate", &BodyMotion::frameRate, &BodyMotion::setFrameRate)
         .def("setFrameRate", &BodyMotion::setFrameRate)
         .def("getOffsetTimeFrame", &BodyMotion::getOffsetTimeFrame)
-        .def("numFrames", &BodyMotion::numFrames)
-        .def("getNumFrames", &BodyMotion::getNumFrames)
+        .def_property("numFrames", &BodyMotion::numFrames, &BodyMotion::setNumFrames)
         .def("setNumFrames", &BodyMotion::setNumFrames)
-        .def("jointPosSeq", (MultiValueSeqPtr(BodyMotion::*)())&BodyMotion::jointPosSeq)
-        .def("linkPosSeq", (MultiSE3SeqPtr(BodyMotion::*)())&BodyMotion::linkPosSeq)
-        .def("frame", (BodyMotion::Frame (BodyMotion::*)(int)) &BodyMotion::frame)
+        .def_property_readonly("jointPosSeq", [](BodyMotion& self){ return self.jointPosSeq(); })
+        .def_property_readonly("linkPosSeq", [](BodyMotion& self){ return self.linkPosSeq(); })
+        .def("frame", [](BodyMotion& self, int f){ return self.frame(f); })
+
         // deprecated
+        .def("getNumJoints", &BodyMotion::numJoints)
+        .def("getNumLinks", &BodyMotion::numLinks)
+        .def("getFrameRate",&BodyMotion::getFrameRate)
+        .def("getNumFrames", &BodyMotion::numFrames)
+        .def("getJointPosSeq", [](BodyMotion& self){ return self.jointPosSeq(); })
+        .def("getLinkPosSeq", [](BodyMotion& self){ return self.linkPosSeq(); })
+        .def("getFrame", [](BodyMotion& self, int f){ return self.frame(f); })
         .def("setNumParts", &BodyMotion::setNumJoints)
         .def("getNumParts", &BodyMotion::numJoints)
         ;
@@ -85,5 +99,8 @@ PYBIND11_MODULE(Body, m)
         .def("frame", &BodyMotion::Frame::frame)
         .def(py::self << Body())
         .def(Body() >> py::self)
+
+        // deprecated
+        .def("getFrame", &BodyMotion::Frame::frame)
         ;
 }

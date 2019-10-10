@@ -19,14 +19,14 @@ namespace {
 const bool SOLVE_CONSTRAINTS_BY_SR_INVERSE = false;
 const bool SOLVE_CONSTRAINTS_BY_SVD = !SOLVE_CONSTRAINTS_BY_SR_INVERSE;
     
-double calcLU(int n, MatrixXd& a, std::vector<int>& pivots);
-void solveByLU(int n, MatrixXd& a, std::vector<int>& pivots, const MatrixXd::ColXpr& x, const VectorXd& b);
+double calcLU(int n, MatrixXd& a, vector<int>& pivots);
+void solveByLU(int n, MatrixXd& a, vector<int>& pivots, const MatrixXd::ColXpr& x, const VectorXd& b);
 bool makeInverseMatrix(int n, MatrixXd& org, MatrixXd& inv, double minValidDet);
 bool makePseudoInverseType1(int m, int n, const MatrixXd& J, MatrixXd& Jinv, MatrixXd& JJ, MatrixXd& JJinv, double minValidDet);
 bool makePseudoInverseType2(int m, int n, const MatrixXd& J, MatrixXd& Jinv, MatrixXd& JJ, MatrixXd& JJinv,
                             const VectorXd& weights, double minValidDet);
 bool makeSRInverseMatrix(int m, int n, const MatrixXd& J, MatrixXd& Jinv, MatrixXd& JJ, MatrixXd& JJ2, MatrixXd& JJinv,
-                         std::vector<int>& pivots, double srk0, double srw0);
+                         vector<int>& pivots, double srk0, double srw0);
 }
 
 
@@ -96,18 +96,18 @@ public:
             
     VectorXd y;   // size N
             
-    std::vector<int> pivots;
+    vector<int> pivots;
             
     bool isBaseLinkFreeMode;
     bool isTargetAttitudeEnabled;
 
     LinkTraverse fkTraverse;
-    JointPath targetJointPath;
+    shared_ptr<JointPath> targetJointPath;
             
     struct PinProperty {
         double weight;
-        InverseKinematics::AxisSet axes;
-        JointPathPtr jointPath;
+        PinDragIK::AxisSet axes;
+        shared_ptr<JointPath> jointPath;
         Vector3 p;
         Matrix3 R;
         Vector3 prevStep_p;
@@ -115,10 +115,10 @@ public:
         PinProperty() : jointPath(new JointPath()) { }
     };
             
-    typedef std::map<Link*, PinProperty> PinPropertyMap;
+    typedef map<Link*, PinProperty> PinPropertyMap;
             
     PinPropertyMap pinPropertyMap;
-    std::vector<double> constraintWeightsSqrt; // size C
+    vector<double> constraintWeightsSqrt; // size C
 
     struct JointConstrain
     {
@@ -126,7 +126,7 @@ public:
         int jointId;
         double dq;
     };
-    std::vector<JointConstrain> jointConstraints;
+    vector<JointConstrain> jointConstraints;
 
     VectorXd dPaux; // size C
 
@@ -139,8 +139,8 @@ public:
     void setFreeRootWeight(double translation, double rotation);
     void setTargetLink(Link* targetLink, bool isAttitudeEnabled);
     void setJointWeight(int jointId, double weight);
-    void setPin(Link* link, InverseKinematics::AxisSet axes, double weight);
-    InverseKinematics::AxisSet pinAxes(Link* link);
+    void setPin(Link* link, PinDragIK::AxisSet axes, double weight);
+    PinDragIK::AxisSet pinAxes(Link* link);
     void setIKErrorThresh(double e);
     void setSRInverseParameters(double k0, double w0);
     void enableJointRangeConstraints(bool on);
@@ -266,16 +266,16 @@ void PinDragIKImpl::setJointWeight(int jointId, double weight)
 }
 
 
-void PinDragIK::setPin(Link* link, InverseKinematics::AxisSet axes, double weight)
+void PinDragIK::setPin(Link* link, PinDragIK::AxisSet axes, double weight)
 {
     impl->setPin(link, axes, weight);
 }
 
 
-void PinDragIKImpl::setPin(Link* link, InverseKinematics::AxisSet axes, double weight)
+void PinDragIKImpl::setPin(Link* link, PinDragIK::AxisSet axes, double weight)
 {
     if(link){
-        if(axes == InverseKinematics::NO_AXES){
+        if(axes == PinDragIK::NO_AXES){
             pinPropertyMap.erase(link);
         } else {
             PinProperty& property = pinPropertyMap[link];
@@ -286,13 +286,13 @@ void PinDragIKImpl::setPin(Link* link, InverseKinematics::AxisSet axes, double w
 }
 
 
-InverseKinematics::AxisSet PinDragIK::pinAxes(Link* link)
+PinDragIK::AxisSet PinDragIK::pinAxes(Link* link)
 {
     return impl->pinAxes(link);
 }
 
 
-InverseKinematics::AxisSet PinDragIKImpl::pinAxes(Link* link)
+PinDragIK::AxisSet PinDragIKImpl::pinAxes(Link* link)
 {
     PinPropertyMap::iterator p = pinPropertyMap.find(link);
     if(p == pinPropertyMap.end()){
@@ -332,10 +332,9 @@ bool PinDragIK::hasAnalyticalIK()
 }
 
 
-InverseKinematics::AxisSet PinDragIK::targetAxes() const
+PinDragIK::AxisSet PinDragIK::targetAxes() const
 {
-    return impl->isTargetAttitudeEnabled ?
-        InverseKinematics::TRANSFORM_6D : InverseKinematics::TRANSLATION_3D;
+    return impl->isTargetAttitudeEnabled ? TRANSFORM_6D : TRANSLATION_3D;
 }
 
 
@@ -385,7 +384,7 @@ bool PinDragIKImpl::initialize()
         N += 6;
     }
     
-    targetJointPath.find(baseLink, targetLink);
+    targetJointPath = make_shared<JointPath>(baseLink, targetLink);
 
     pinPropertyMap.erase(targetLink);
 
@@ -396,13 +395,14 @@ bool PinDragIKImpl::initialize()
     while(p != pinPropertyMap.end()){
         Link* link = p->first;
         PinProperty& property = p->second;
-        if(!property.jointPath->find(baseLink, link)){
+        property.jointPath = make_shared<JointPath>(baseLink, link);
+        if(property.jointPath->empty()){
             return false;
         }
 
         double weightSqrt = sqrt(property.weight);
 
-        if(property.axes & InverseKinematics::TRANSLATION_3D){
+        if(property.axes & PinDragIK::TRANSLATION_3D){
             property.p = link->p();
             for(int i=0; i < 3; i++){
                 constraintWeightsSqrt.push_back(weightSqrt);
@@ -410,7 +410,7 @@ bool PinDragIKImpl::initialize()
             C += 3;
         }
 
-        if(property.axes & InverseKinematics::ROTATION_3D){
+        if(property.axes & PinDragIK::ROTATION_3D){
             property.R = link->R();
             for(int i=0; i < 3; i++){
                 constraintWeightsSqrt.push_back(weightSqrt);
@@ -519,13 +519,13 @@ bool PinDragIKImpl::calcInverseKinematics(const Position& T)
 PinDragIKImpl::IKStepResult PinDragIKImpl::calcOneStep(const Vector3& v, const Vector3& omega)
 {
     // make Jacobian matrix for the target link
-    int axes = InverseKinematics::TRANSLATION_3D;
+    int axes = PinDragIK::TRANSLATION_3D;
     if(isTargetAttitudeEnabled){
-        axes |= InverseKinematics::ROTATION_3D;
+        axes |= PinDragIK::ROTATION_3D;
     }
-    setJacobianForOnePath(J, 0, targetJointPath, axes);
+    setJacobianForOnePath(J, 0, *targetJointPath, axes);
     if(isBaseLinkFreeMode){
-        setJacobianForFreeRoot(J, 0, targetJointPath, axes);
+        setJacobianForFreeRoot(J, 0, *targetJointPath, axes);
     }
 
     bool isOk;
@@ -583,12 +583,12 @@ PinDragIKImpl::IKStepResult PinDragIKImpl::calcOneStep(const Vector3& v, const V
         Link* link = p->first;
         PinProperty& property = p->second;
         double errsqr = 0.0;
-        if(property.axes & InverseKinematics::TRANSLATION_3D){
+        if(property.axes & PinDragIK::TRANSLATION_3D){
             const Vector3 dp = property.prevStep_p - link->p();
             errsqr += dp.squaredNorm();
             property.prevStep_p = link->p();
         }
-        if(property.axes & InverseKinematics::ROTATION_3D){
+        if(property.axes & PinDragIK::ROTATION_3D){
             const Vector3 omega = omegaFromRot(link->R().transpose() * property.prevStep_R);
             errsqr += omega.squaredNorm();
             property.prevStep_R = link->R();
@@ -677,14 +677,14 @@ void PinDragIKImpl::setJacobianForOnePath(MatrixXd& J, int row, JointPath& joint
             }
    
             int r = row;
-            if(axes & InverseKinematics::TRANSLATION_3D){
+            if(axes & PinDragIK::TRANSLATION_3D){
                 const Vector3 dp = omega.cross(target->p() - link->p());
                 J(r++, col) = dp(0);
                 J(r++, col) = dp(1);
                 J(r++, col) = dp(2);
             }
     
-            if(axes & InverseKinematics::ROTATION_3D){
+            if(axes & PinDragIK::ROTATION_3D){
                 J(r++, col) = omega(0);
                 J(r++, col) = omega(1);
                 J(r++, col) = omega(2);
@@ -705,7 +705,7 @@ void PinDragIKImpl::setJacobianForFreeRoot(MatrixXd& J, int row, JointPath& join
 
     int col = NJ;
 
-    if(axes & InverseKinematics::TRANSLATION_3D){
+    if(axes & PinDragIK::TRANSLATION_3D){
         Vector3 omega = Vector3::Zero();
         for(int i=0; i < 3; i++){
             omega[i] = 1.0;
@@ -722,7 +722,7 @@ void PinDragIKImpl::setJacobianForFreeRoot(MatrixXd& J, int row, JointPath& join
         row += 3;
     }
     
-    if(axes & InverseKinematics::ROTATION_3D){
+    if(axes & PinDragIK::ROTATION_3D){
         for(int i=0; i < 3; i++){
             J(row + i, col + i + 3) = 1.0;
         }
@@ -744,14 +744,14 @@ void PinDragIKImpl::addPinConstraints()
             setJacobianForFreeRoot(Jaux, row, *property.jointPath, property.axes);
         }
 
-        if(property.axes & InverseKinematics::TRANSLATION_3D){
+        if(property.axes & PinDragIK::TRANSLATION_3D){
             const Vector3 dp = property.p - link->p();
             dPaux[row++] = dp[0];
             dPaux[row++] = dp[1];
             dPaux[row++] = dp[2];
         }
     
-        if(property.axes & InverseKinematics::ROTATION_3D){
+        if(property.axes & PinDragIK::ROTATION_3D){
             const Vector3 omega = link->R() * omegaFromRot(link->R().transpose() * property.R);
             dPaux[row++] = omega[0];
             dPaux[row++] = omega[1];
@@ -797,10 +797,10 @@ namespace {
 /**
    \param pivots row exchange index in LU decomposition (size = n)
 */
-double calcLU(int n, MatrixXd& a, std::vector<int>& pivots)
+double calcLU(int n, MatrixXd& a, vector<int>& pivots)
 {
     double det = 1.0; 
-    std::vector<double> weight(n);    
+    vector<double> weight(n);    
         
     // get the max element and a scaling value in each row 
     double v, max;
@@ -854,7 +854,7 @@ double calcLU(int n, MatrixXd& a, std::vector<int>& pivots)
 /**
    Solve Ax = b for x 
 */
-void solveByLU(int n, MatrixXd& a, std::vector<int>& pivots, const MatrixXd::ColXpr& x, const VectorXd& b)
+void solveByLU(int n, MatrixXd& a, vector<int>& pivots, const MatrixXd::ColXpr& x, const VectorXd& b)
 {
     int ix;
     double t;
@@ -881,7 +881,7 @@ void solveByLU(int n, MatrixXd& a, std::vector<int>& pivots, const MatrixXd::Col
 
 bool makeInverseMatrix(int n, MatrixXd& org, MatrixXd& inv, double minValidDet)
 {
-    std::vector<int> pivots(n);
+    vector<int> pivots(n);
     VectorXd unitVector(n);
     unitVector.setZero();
 
@@ -952,7 +952,7 @@ bool makePseudoInverseType2
 // calculate J^T(J J^T + kI)^-1
 bool makeSRInverseMatrix
 (int m, int n, const MatrixXd& J, MatrixXd& Jinv, MatrixXd& JJ, MatrixXd& JJ2, MatrixXd& JJinv,
- std::vector<int>& pivots, double srk0, double srw0)
+ vector<int>& pivots, double srk0, double srw0)
 {
     // JJ = J J^T
     JJ.noalias() = J * J.transpose();

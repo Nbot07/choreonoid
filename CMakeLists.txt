@@ -1,20 +1,27 @@
-cmake_minimum_required(VERSION 2.8.12)
+if(MSVC)
+  cmake_minimum_required(VERSION 3.10.0) # CMAKE_CXX_STANDARD 17 is supported for MSVC
+else()
+  cmake_minimum_required(VERSION 3.5.0) # Ubuntu 16.04
+endif()
+
 cmake_policy(SET CMP0003 NEW)
+cmake_policy(SET CMP0057 NEW)
 set(CMAKE_ALLOW_LOOSE_LOOP_CONSTRUCTS true)
 
 include(FindPkgConfig)
 include(CheckIncludeFiles)
+include(CheckCXXCompilerFlag)
 
 project(Choreonoid)
 
 # set(CMAKE_MODULE_PATH ${PROJECT_SOURCE_DIR}/cmake_modules/)
 
 set(CNOID_MAJOR_VERSION 1) 
-set(CNOID_MINOR_VERSION 7)
+set(CNOID_MINOR_VERSION 8)
 set(CNOID_PATCH_VERSION 0)
 set(CNOID_VERSION ${CNOID_MAJOR_VERSION}.${CNOID_MINOR_VERSION})
 set(CNOID_FULL_VERSION ${CNOID_MAJOR_VERSION}.${CNOID_MINOR_VERSION}.${CNOID_PATCH_VERSION})
-
+set(CNOID_VERSION_ID "0x010800")
 set(CNOID_INTERNAL_VERSION 1)
 
 set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY ${PROJECT_BINARY_DIR}/lib)
@@ -25,23 +32,54 @@ set(CNOID_DIR ${CMAKE_INSTALL_PREFIX})
 set(CNOID_SUBDIR choreonoid-${CNOID_VERSION})
 set(CNOID_PLUGIN_SUBDIR lib/${CNOID_SUBDIR})
 
+# C++ version
+set(CMAKE_CXX_STANDARD 11)
+set(CMAKE_CXX_EXTENSIONS OFF)
+if(NOT CMAKE_VERSION VERSION_LESS 3.8.0) # CMake 3.8 or later is required to enable C++17
+  option(ENABLE_CXX_STANDARD_17 "Enable C++ 17 when it is available to the compiler" OFF)
+endif()
+if(NOT ENABLE_CXX_STANDARD_17)
+  unset(has_cpp17 CACHE)
+endif()
 if(UNIX)
-  set(cpp_standard "-std=c++11")
-  include(CheckCXXCompilerFlag OPTIONAL RESULT_VARIABLE included)
-  if(included)
-    check_cxx_compiler_flag("-std=c++14" has_cpp14)
-    if(has_cpp14)
-      set(cpp_standard "-std=c++14")
+  # Old GCC does not implement the regex library correctly
+  if(CMAKE_COMPILER_IS_GNUCC AND CMAKE_CXX_COMPILER_VERSION VERSION_LESS 4.9.3)
+    messag(FATAL_ERROR "The version of GCC is too old to build Choreonoid")
+  endif()
+  if(ENABLE_CXX_STANDARD_17)
+    check_cxx_compiler_flag("-std=c++17" has_cpp17)
+    if(has_cpp17)
+      set(CMAKE_CXX_STANDARD 17)
     endif()
   endif()
-  set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${cpp_standard}")
-
+  if(NOT has_cpp17)
+    check_cxx_compiler_flag("-std=c++14" has_cpp14)
+    if(has_cpp14)
+      set(CMAKE_CXX_STANDARD 14)
+    endif()
+  endif()
   if(CMAKE_COMPILER_IS_GNUCC)
     # To allow for reloading a controller shared library
     set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} --no-gnu-unique")
   endif()
-  
   add_definitions("-pthread")
+
+elseif(MSVC)
+  if(ENABLE_CXX_STANDARD_17)
+    check_cxx_compiler_flag("/std:c++17" has_cpp17)
+    if(has_cpp17)
+      set(CMAKE_CXX_STANDARD 17)
+    endif()
+  endif()
+  if(NOT has_cpp17)
+    check_cxx_compiler_flag("/std:c++14" has_cpp14)
+    if(has_cpp14)
+      set(CMAKE_CXX_STANDARD 14)
+    endif()
+  endif()
+  if(${MSVC_VERSION} GREATER_EQUAL 1910)
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /Zc:__cplusplus")
+  endif()
 endif()
 
 if(WIN32)
@@ -58,6 +96,11 @@ set(CNOID_SHARE_DIR "${CNOID_DIR}/${CNOID_SHARE_SUBDIR}")
 
 set(CNOID_SOURCE_SHARE_DIR "${PROJECT_SOURCE_DIR}/share")
 
+if(PROJECT_BINARY_DIR STREQUAL PROJECT_SOURCE_DIR)
+  set(CNOID_BINARY_SHARE_DIR ${CNOID_SOURCE_SHARE_DIR})
+else()
+  set(CNOID_BINARY_SHARE_DIR "${PROJECT_BINARY_DIR}/${CNOID_SHARE_SUBDIR}")
+endif()
 
 option(ENABLE_GUI "Enable GUI components" ON)
 
@@ -71,11 +114,89 @@ endif()
 
 option(INSTALL_RUNTIME_DEPENDENCIES "Installing the runtimes of external libraries" ${DEFAULT_INSTALL_RUNTIME_DEPENDENCIES})
 option(INSTALL_SDK "Installing SDK files such as header files" ${DEFAULT_INSTALL_SDK})
-option(INSTALL_SDK_WITH_EXTLIBS "The SDK installation includes the external libraries" OFF)
+if(MSVC)
+  option(INSTALL_SDK_WITH_EXTLIBS "The SDK installation includes the external libraries" OFF)
+endif()
+
+set(CNOID_SDK_INCLUDE_DIRS ${CNOID_DIR}/${CNOID_HEADER_SUBDIR})
 
 if(MSVC AND CMAKE_CL_64)
-   add_definitions(-D_WIN64)
+  add_definitions(-D_WIN64)
 endif()
+
+# The following option is not necessary.
+# Instead of this, use include_directories(${CMAKE_CURRENT_BINARY_DIR}) where necessary.
+# set(CMAKE_INCLUDE_CURRENT_DIR ON)
+
+if(NOT PROJECT_BINARY_DIR STREQUAL PROJECT_SOURCE_DIR)
+  include_directories(${PROJECT_BINARY_DIR})
+  include_directories(${PROJECT_BINARY_DIR}/include)
+endif()
+include_directories(${PROJECT_SOURCE_DIR})
+include_directories(${PROJECT_SOURCE_DIR}/include)
+
+link_directories(${PROJECT_BINARY_DIR}/lib)
+link_directories(${PROJECT_BINARY_DIR}/${CNOID_PLUGIN_SUBDIR})
+
+if(NOT CMAKE_BUILD_TYPE)
+  set(
+    CMAKE_BUILD_TYPE Release CACHE STRING
+    "Choose the type of build, options are: None Debug Release RelWithDebInfo MinSizeRel."
+    FORCE)
+endif()
+
+if(UNIX)
+  set(CMAKE_CXX_FLAGS_DEBUG "${CMAKE_CXX_FLAGS_DEBUG} -finline-functions")
+  option(ENABLE_GCC_FVISIBILITY_HIDDEN "Use the -fvisibility=hidden option when the sources are compiled" ON)
+  option(ENABLE_NATIVE_CPU_ARCHITECTURE "Use the -march=native option to enable instruction set supported by the native processor architecture" OFF)
+  if(ENABLE_NATIVE_ARCHITECTURE)
+    set(compiler_general_options "-march=native")
+  endif()
+endif()
+
+if(MSVC)
+  set(compiler_optimization_options "/O2 /Ob2 /Oi /Gy /GS- /fp:fast")
+
+  if(${MSVC_VERSION} GREATER_EQUAL 1915)
+    add_definitions(-D_ENABLE_EXTENDED_ALIGNED_STORAGE)
+  endif()
+
+  if(CMAKE_CL_64)
+    option(MSVC_ENABLE_AVX "Enable AVX instructions on VC++." OFF)
+    option(MSVC_ENABLE_AVX2 "Enable AVX2 instructions on VC++." OFF)
+    if(MSVC_ENABLE_AVX2)
+      set(compiler_general_options "/arch:AVX2")
+    elseif(MSVC_ENABLE_AVX)
+      set(compiler_general_options "/arch:AVX")
+    endif()
+  else()
+    option(MSVC_ENABLE_SSE "Enable SSE instructions" ON)
+    if(MSVC_ENABLE_SSE)
+      set(compiler_general_options "/arch:SSE /arch:SSE2")
+    endif()
+  endif()
+
+  set(linker_optimization_options "")
+  option(MSVC_ENABLE_GLOBAL_OPTIMIZATION "Global optimization with compiler option /GL and linker option /LTCG" OFF)
+  if(MSVC_ENABLE_GLOBAL_OPTIMIZATION)
+    set(compiler_optimization_options "${compiler_optimization_options} /GL")
+    set(linker_optimization_options "${linker_optimization_options} /LTCG")
+  endif()
+endif()
+
+set(ADDITIONAL_CXX_FLAGS ${ADDITIONAL_CXX_FLAGS} CACHE STRING "Additional c++ compiler optimization flags")
+
+set(CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE} ${ADDITIONAL_CXX_FLAGS} ${compiler_optimization_options} ${compiler_general_options}")
+set(CMAKE_C_FLAGS_RELEASE "${CMAKE_C_FLAGS_RELEASE} ${compiler_optimization_options} ${compiler_general_options}")
+set(CMAKE_CXX_FLAGS_RELWITHDEBINFO "${CMAKE_CXX_FLAGS_RELWITHDEBINFO} ${ADDITIONAL_CXX_FLAGS} ${compiler_optimization_options} ${compiler_general_options}")
+set(CMAKE_C_FLAGS_RELWITHDEBINFO "${CMAKE_CXX_FLAGS_RELWITHDEBINFO} ${compiler_optimization_options} ${compiler_general_options}")
+set(CMAKE_CXX_FLAGS_DEBUG "${CMAKE_CXX_FLAGS_DEBUG} ${compiler_general_options}")
+set(CMAKE_C_FLAGS_DEBUG "${CMAKE_C_FLAGS_DEBUG} ${compiler_general_options}")
+
+set(CMAKE_STATIC_LINKER_FLAGS_RELEASE "${CMAKE_STATIC_LINKER_FLAGS_RELEASE} ${linker_optimization_options}")
+set(CMAKE_MODULE_LINKER_FLAGS_RELEASE "${CMAKE_MODULE_LINKER_FLAGS_RELEASE} ${linker_optimization_options}")
+set(CMAKE_SHARED_LINKER_FLAGS_RELEASE "${CMAKE_SHARED_LINKER_FLAGS_RELEASE} ${linker_optimization_options}")
+set(CMAKE_EXE_LINKER_FLAGS_RELEASE "${CMAKE_EXE_LINKER_FLAGS_RELEASE} ${linker_optimization_options}")
 
 function(install_external_libraries dll_dir lib_dir)
 
@@ -121,71 +242,6 @@ function(install_external_libraries dll_dir lib_dir)
 
 endfunction()
 
-
-
-if(NOT CMAKE_BUILD_TYPE)
-  set(
-    CMAKE_BUILD_TYPE Release CACHE STRING
-    "Choose the type of build, options are: None Debug Release RelWithDebInfo MinSizeRel."
-    FORCE)
-endif()
-
-if(UNIX)
-  set(CMAKE_CXX_FLAGS_DEBUG "${CMAKE_CXX_FLAGS_DEBUG} -finline-functions")
-  option(ENABLE_GCC_FVISIBILITY_HIDDEN "Use the -fvisibility=hidden option when the sources are compiled" ON)
-endif()
-
-set(ADDITIONAL_CXX_FLAGS_RELEASE ${ADDITIONAL_CXX_FLAGS_RELEASE} CACHE STRING "Additional c++ compiler optimization flags")
-set(CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE} ${EXTRA_CXX_FLAGS_RELEASE} ${ADDITIONAL_CXX_FLAGS_RELEASE}")
-
-
-if(MSVC)
-
-  set(ext_compiler_options "/Ob2 /Ox /Oi /Ot /Oy /GT /GS- /fp:fast")
-  if(CMAKE_CL_64)
-    set(MSVC_ENABLE_SSE OFF CACHE BOOL "Enable SSE instructions on VC++." FORCE)
-  else()
-    option(MSVC_ENABLE_SSE "Enable SSE instructions on VC++." ON)
-  endif()
-  if(MSVC_ENABLE_SSE)
-    set(ext_compiler_options "${ext_compiler_options} /arch:SSE /arch:SSE2 /fp:fast")
-  endif()
-  option(MSVC_ENABLE_AVX "Enable AVX instructions on VC++." OFF)
-  if(MSVC_ENABLE_AVX)
-    set(ext_compiler_options "${ext_compiler_options} /arch:AVX")
-  endif()
-  option(MSVC_ENABLE_AVX2 "Enable AVX2 instructions on VC++." OFF)
-  if(MSVC_ENABLE_AVX2)
-    set(ext_compiler_options "${ext_compiler_options} /arch:AVX2")
-  endif()
-  set(ext_linker_options "")
-
-  option(MSVC_ENABLE_GLOBAL_OPTIMIZATION "Global optimization with compiler option /GL and linker option /LTCG" ON)
-  if(MSVC_ENABLE_GLOBAL_OPTIMIZATION)
-    set(ext_compiler_options "${ext_compiler_options} /GL")
-    set(ext_linker_options "${ext_linker_options} /LTCG")
-  endif()
-
-  set(CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE} ${ext_compiler_options}")
-  set(CMAKE_MODULE_LINKER_FLAGS_RELEASE "${CMAKE_MODULE_LINKER_FLAGS_RELEASE} ${ext_linker_options}")
-  set(CMAKE_SHARED_LINKER_FLAGS_RELEASE "${CMAKE_SHARED_LINKER_FLAGS_RELEASE} ${ext_linker_options}")
-  set(CMAKE_EXE_LINKER_FLAGS_RELEASE "${CMAKE_EXE_LINKER_FLAGS_RELEASE} ${ext_linker_options}")
-
-  if(MSVC_ENABLE_SSE)
-    set(CMAKE_CXX_FLAGS_RELWITHDEBINFO "${CMAKE_CXX_FLAGS_RELWITHDEBINFO} /GS- /fp:fast /arch:SSE2 /arch:SSE2")
-
-    set(CMAKE_CXX_FLAGS_DEBUG "${CMAKE_CXX_FLAGS_DEBUG} /fp:fast /arch:SSE2 /arch:SSE2")
-  endif()
-endif()
-
-find_package(Threads)
-
-if(ENABLE_GUI)
-  find_package(OpenGL)
-  include_directories(${OPENGL_INCLUDE_DIR})
-endif()
-
-
 option(ENABLE_INSTALL_RPATH "Enable RPATH setting for installed binary files" ON)
 
 if(ENABLE_INSTALL_RPATH)
@@ -209,7 +265,6 @@ if(CNOID_ENABLE_BACKWARD_COMPATIBILITY)
   set_property(DIRECTORY APPEND PROPERTY COMPILE_DEFINITIONS CNOID_BACKWARD_COMPATIBILITY)
 endif()
 
-
 # commands
 if(UNIX)
   set(RMDIR rm -fr)
@@ -225,17 +280,12 @@ if(UNIX)
   endif()
 endif()
 
-
 # gettext
 option(CNOID_ENABLE_GETTEXT "Enable the gettext library and translation messages for the internationalization" ON)
 
 if(CNOID_ENABLE_GETTEXT)
   if(WIN32)
-#    if(CMAKE_CL_64)
-#      FIND_PROGRAM(GETTEXT_MSGFMT_EXECUTABLE msgfmt ${PROJECT_SOURCE_DIR}/thirdparty/windows64/bin)
-#    else()
-      FIND_PROGRAM(GETTEXT_MSGFMT_EXECUTABLE msgfmt ${PROJECT_SOURCE_DIR}/thirdparty/windows/bin)
-#    endif()
+    FIND_PROGRAM(GETTEXT_MSGFMT_EXECUTABLE msgfmt ${PROJECT_SOURCE_DIR}/thirdparty/windows/bin)
   else()
     FIND_PROGRAM(GETTEXT_MSGFMT_EXECUTABLE msgfmt)
   endif()
@@ -256,16 +306,10 @@ if(CNOID_ENABLE_GETTEXT)
     set(GETTEXT_LIBRARIES intl)
   elseif(APPLE)
     set(GETTEXT_LIBRARIES intl)
-    #set(GETTEXT_STATIC_LIBRARIES
-    #  ${GETTEXT_LIBRARY_DIR}/libintl.a 
-    #  ${GETTEXT_LIBRARY_DIR}/libiconv.a
-    #  System.B 
-    #  /System/Library/Frameworks/CoreFoundation.framework)
   else()
     set(GETTEXT_LIBRARIES "")
   endif()
   if(MSVC)
-    #install_external_libraries(${GETTEXT_BINARY_DIR} ${GETTEXT_LIBRARY_DIR} ${GETTEXT_LIBRARIES})
     if(CMAKE_CL_64)
       install(FILES thirdparty/windows64/bin/libintl-8.dll DESTINATION bin)
     else()
@@ -284,6 +328,17 @@ else()
   set(GETTEXT_LIBRARIES "")
 endif()
 
+find_package(Threads)
+
+# OpenGL
+if(ENABLE_GUI)
+  if(POLICY CMP0072)
+    cmake_policy(SET CMP0072 OLD)
+  endif()
+  find_package(OpenGL)
+  include_directories(${OPENGL_INCLUDE_DIR})
+endif()
+
 # Python
 if(WIN32)
   option(ENABLE_PYTHON "Enable Python" OFF)
@@ -291,18 +346,7 @@ else()
   option(ENABLE_PYTHON "Enable Python" ON)
 endif()
 
-option(USE_PYBIND11 "Use the pybind11 library to make python bindings" ON)
-set(PYBIND11_DIR ${PROJECT_SOURCE_DIR}/thirdparty/pybind11 CACHE PATH "The directory of the pybind11 library")
-if(USE_PYBIND11)
-  set(USE_BOOST_PYTHON OFF)
-else()
-  set(USE_BOOST_PYTHON ON)
-endif()
-set(CNOID_USE_PYBIND11 ${USE_PYBIND11})
-set(CNOID_USE_BOOST_PYTHON ${USE_BOOST_PYTHON})
-
 option(USE_PYTHON3 "Use Python version 3 instead of version 2" ON)
-
 # for Config.h
 if(USE_PYTHON3)
   set(CNOID_USE_PYTHON2 OFF)
@@ -310,14 +354,16 @@ else()
   set(CNOID_USE_PYTHON2 ON)
 endif()
 
+set(CNOID_PYTHON_SUBDIR ${CNOID_PLUGIN_SUBDIR}/python)
+
+if(MSVC)
+  set(USE_EXTERNAL_PYBIND11_DEFAULT OFF)
+else()
+  set(USE_EXTERNAL_PYBIND11_DEFAULT ON)
+endif()
+option(USE_EXTERNAL_PYBIND11 "Use the Pybind11 library installed in the system" ${USE_EXTERNAL_PYBIND11_DEFAULT})
+
 if(ENABLE_PYTHON)
-  if(USE_PYBIND11)
-    include_directories(${PYBIND11_DIR}/include)
-  else()
-    if(NOT USE_PYBIND11 AND USE_PYTHON3)
-      message(FATAL_ERROR "USE_PYTHON3 requires to enable USE_PYBIND11.")
-    endif()
-  endif()
   # The following cache variables must be cleared to update the python version
   unset(PYTHON_INCLUDE_DIR CACHE)
   unset(PYTHON_LIBRARY CACHE)
@@ -328,13 +374,44 @@ if(ENABLE_PYTHON)
   else()
     find_package(PythonLibs 2 REQUIRED)
   endif()
-  include_directories(${PYTHON_INCLUDE_PATH})
-  set(CNOID_PYTHON_SUBDIR ${CNOID_PLUGIN_SUBDIR}/python)
+  include_directories(${PYTHON_INCLUDE_DIRS})
   set(init_py "${PROJECT_BINARY_DIR}/${CNOID_PYTHON_SUBDIR}/cnoid/__init__.py")
   file(WRITE ${init_py} "")
   install(FILES ${init_py} DESTINATION ${CNOID_PYTHON_SUBDIR}/cnoid
     CONFIGURATIONS Release Debug RelWithDebInfo MinSizeRel)
+  if(MSVC)
+    add_definitions(-DHAVE_SNPRINTF)
+  endif()
+  list(APPEND CNOID_SDK_INCLUDE_DIRS ${PYTHON_INCLUDE_PATH})
+
+  if(USE_EXTERNAL_PYBIND11)
+    find_package(pybind11 2.2.4 QUIET)
+    if(pybind11_FOUND)
+      set(PYBIND11_INCLUDE_DIRS ${pybind11_INCLUDE_DIRS})
+      if(INSTALL_SDK_WITH_EXTLIBS)
+	foreach(dir ${PYBIND11_INCLUDE_DIRS})
+	  if(EXISTS ${dir}/pybind11)
+            install(DIRECTORY ${dir}/pybind11 DESTINATION ${CNOID_HEADER_SUBDIR})
+	  endif()
+	endforeach()
+      else()
+	list(APPEND CNOID_SDK_INCLUDE_DIRS ${PYBIND11_INCLUDE_DIRS})
+      endif()
+    endif()
+  endif()
+  if(NOT USE_EXTERNAL_PYBIND11 OR NOT pybind11_FOUND)
+    set(PYBIND11_INCLUDE_DIRS ${PROJECT_SOURCE_DIR}/thirdparty/pybind11-2.2.4/include)
+    if(INSTALL_SDK)
+      install(DIRECTORY ${PYBIND11_INCLUDE_DIRS}/pybind11 DESTINATION ${CNOID_HEADER_SUBDIR})
+    else()
+      list(APPEND CNOID_SDK_INCLUDE_DIRS ${PYBIND11_INCLUDE_DIRS})
+    endif()
+  endif()
+  include_directories(${PYBIND11_INCLUDE_DIRS})
 endif()
+
+# This variable is kept for backward compatibility
+set(USE_PYBIND11 ${ENABLE_PYTHON})
 
 # Lua
 if(UNIX)
@@ -342,7 +419,9 @@ if(UNIX)
 endif()
 
 if(ENABLE_LUA)
-  set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -std=c++14")
+  if(CMAKE_CXX_STANDARD LESS 14)
+    message(FATAL_ERROR "Lua wrapper requires C++14 or later C++ versions")
+  endif()
   set(LUA_SOL2_DIR ${PROJECT_SOURCE_DIR}/thirdparty/sol2 CACHE PATH "set the directory of the Sol2 library")
   pkg_check_modules(LUA lua5.3)
   if(NOT LUA_FOUND)
@@ -356,42 +435,20 @@ if(ENABLE_LUA)
 endif()
 
 # boost
-
 set(Boost_USE_STATIC_LIBS OFF)
-set(Boost_ADDITIONAL_VERSIONS "1.56" "1.57" "1.58" "1.59" "1.60" "1.61" "1.62" "1.63" "1.64" "1.65")
-
+set(Boost_ADDITIONAL_VERSIONS "1.62" "1.63" "1.64" "1.65" "1.66" "1.67" "1.68" "1.69" "1.70")
+set(boost_packages system program_options iostreams)
+if(NOT has_cpp17)
+  set(boost_packages ${boost_packages} filesystem)
+endif()
 if(MSVC)
-  find_package(Boost 1.54.0 QUIET OPTIONAL_COMPONENTS bzip2 zlib)
-endif()
-
-set(boost_packages system filesystem program_options iostreams)
-
-if(ENABLE_PYTHON AND USE_BOOST_PYTHON)
-  set(boost_packages ${boost_packages} python)
-endif()
-
-# Old GCC does not implement the regex library correctly
-if(CMAKE_COMPILER_IS_GNUCC AND CMAKE_CXX_COMPILER_VERSION VERSION_LESS 4.9.3)
-  set(CNOID_USE_BOOST_REGEX ON)
+  find_package(Boost 1.58.0 REQUIRED COMPONENTS ${boost_packages} OPTIONAL_COMPONENTS bzip2 zlib)
 else()
-  set(CNOID_USE_BOOST_REGEX OFF)
-endif()
-
-if(CNOID_USE_BOOST_REGEX)
-  set(boost_packages ${boost_packages} regex)
-endif()
-
-find_package(Boost 1.54.0 REQUIRED COMPONENTS ${boost_packages})
-
-if(NOT Boost_FOUND)
-  set(BOOST_ROOT ${BOOST_ROOT} CACHE PATH "set the directory of the boost root")
-  set(BOOST_LIBRARYDIR ${BOOST_LIBRARYDIR} CACHE PATH "set the directory of the boost library")
-  message(FATAL_ERROR "Boost cannot be found. Please specify the boost top directory to BOOST_ROOT.")
+  find_package(Boost 1.58.0 REQUIRED COMPONENTS ${boost_packages})
 endif()
 
 include_directories(${Boost_INCLUDE_DIRS})
 link_directories(${Boost_LIBRARY_DIRS})
-
 set_property(DIRECTORY APPEND PROPERTY COMPILE_DEFINITIONS $<$<CONFIG:Release>:BOOST_DISABLE_ASSERTS>)
 
 if(MSVC)
@@ -400,14 +457,6 @@ if(MSVC)
   install_external_libraries(${Boost_LIBRARY_DIRS} ${Boost_LIBRARY_DIRS}
     ${Boost_SYSTEM_LIBRARY} ${Boost_FILESYSTEM_LIBRARY} ${Boost_PROGRAM_OPTIONS_LIBRARY}
     ${Boost_IOSTREAMS_LIBRARY} ${Boost_ZLIB_LIBRARY})
-
-  if(CNOID_USE_BOOST_REGEX)
-    install_external_libraries(${Boost_LIBRARY_DIRS} ${Boost_LIBRARY_DIRS} ${Boost_REGEX_LIBRARY})
-  endif()
-  
-  if(ENABLE_PYTHON AND USE_BOOST_PYTHON)
-    install_external_libraries(${Boost_LIBRARY_DIRS} ${Boost_LIBRARY_DIRS} ${Boost_PYTHON_LIBRARY})
-  endif()
 
   if(INSTALL_SDK_WITH_EXTLIBS)
     foreach(dir ${Boost_INCLUDE_DIRS})
@@ -419,109 +468,65 @@ if(MSVC)
 endif()
 
 # eigen
-if(NOT EIGEN_DIR)
-  if(UNIX)
-    pkg_check_modules(EIGEN eigen3>=3.2.7) # pybind11 requries Eigen version 3.2.7 or higher
-    if(EIGEN_FOUND)
-      set(EIGEN_DIR ${EIGEN_INCLUDE_DIRS})
-    else()
-      message(STATUS "Set Eigen 3.3.4 included in the thirdparty directory to EIGEN_DIR")
-      set(EIGEN_DIR ${PROJECT_SOURCE_DIR}/thirdparty/eigen)
-      set(EIGEN_INCLUDE_DIRS ${EIGEN_DIR})
-    endif()
-  endif()
+if(MSVC)
+  set(USE_EXTERNAL_EIGEN_DEFAULT OFF)
 else()
-  set(EIGEN_INCLUDE_DIRS ${EIGEN_DIR})
+  set(USE_EXTERNAL_EIGEN_DEFAULT ON)
 endif()
+option(USE_EXTERNAL_EIGEN "Use the Eigen library installed in the system" ${USE_EXTERNAL_EIGEN_DEFAULT})
 
-set(EIGEN_DIR ${EIGEN_DIR} CACHE PATH "The directory of the Eigen library")
-
-if(NOT EIGEN_INCLUDE_DIRS)
-  message(FATAL_ERROR "Please specify the Eigen directory to EIGEN_DIR.")
-else()
-  include_directories(${EIGEN_INCLUDE_DIRS})
-endif()
-
-set_property(DIRECTORY APPEND PROPERTY COMPILE_DEFINITIONS EIGEN_NO_DEBUG)
-#set_property(DIRECTORY APPEND PROPERTY COMPILE_DEFINITIONS EIGEN_NO_DEBUG EIGEN_DONT_ALIGN)
-
-if(MSVC AND INSTALL_SDK_WITH_EXTLIBS)
-  foreach(dir ${EIGEN_INCLUDE_DIRS})
-    if(EXISTS "${EIGEN_INCLUDE_DIRS}/Eigen")
-      install(DIRECTORY "${EIGEN_INCLUDE_DIRS}/Eigen" DESTINATION ${CNOID_HEADER_SUBDIR})
-    endif()
-    if(EXISTS "${EIGEN_INCLUDE_DIRS}/unsupported/Eigen")
-      install(DIRECTORY "${EIGEN_INCLUDE_DIRS}/unsupported/Eigen" DESTINATION ${CNOID_HEADER_SUBDIR})
-    endif()
-  endforeach()
-endif()
-
-
-###############
-#  Setup Qt4  #
-###############
-macro(setup_qt4)
-  find_package(Qt4 4.7.0 REQUIRED)
-  set(QT_USE_QTOPENGL TRUE)
-  set(QT_USE_QTNETWORK TRUE)
-  #set(QT_USE_QTTEST TRUE)
-  include(${QT_USE_FILE})
-  add_definitions(-DQT_NO_KEYWORDS)
-  set(QT5 FALSE)
-
-  if(MSVC)
-    install_external_libraries(${QT_BINARY_DIR} ${QT_LIBRARY_DIR} ${QT_LIBRARIES})
+if(USE_EXTERNAL_EIGEN)
+  find_package(Eigen3 QUIET)
+  if(EIGEN3_FOUND)
     if(INSTALL_SDK_WITH_EXTLIBS)
-      foreach(dir
-          ${QT_QTCORE_INCLUDE_DIR} ${QT_QTGUI_INCLUDE_DIR} ${QT_QTOPENGL_INCLUDE_DIR} ${QT_QTNETWORK_INCLUDE_DIR})
-        install(DIRECTORY ${dir} DESTINATION ${CNOID_HEADER_SUBDIR})
+      foreach(dir ${EIGEN3_INCLUDE_DIRS})
+	if(EXISTS ${dir}/Eigen)
+	  install(DIRECTORY ${dir}/Eigen DESTINATION ${CNOID_HEADER_SUBDIR})
+	endif()
+	if(EXISTS ${dir}/unsupported)
+	  install(DIRECTORY ${dir}/unsupported DESTINATION ${CNOID_HEADER_SUBDIR})
+	endif()
       endforeach()
-    endif()
-  endif()
-endmacro()
-
-###############
-#  Setup Qt5  #
-###############
-macro(setup_qt5)
-  if(MSVC)
-    set(PROGRAMFILES "ProgramFiles(X86)")
-    if(CMAKE_CL_64)
-      if(MSVC_VERSION EQUAL 1700)    #VS2012
-        set(CMAKE_LIBRARY_PATH "$ENV{PROGRAMFILES}/Windows\ Kits/8.0/Lib/win8/um/x64")
-      elseif(MSVC_VERSION EQUAL 1800)    #VS2013
-        set(CMAKE_LIBRARY_PATH "$ENV{PROGRAMFILES}/Windows\ Kits/8.1/Lib/win8/um/x64")
-      endif()
     else()
-      if(MSVC_VERSION EQUAL 1700) 
-        set(CMAKE_LIBRARY_PATH "$ENV{PROGRAMFILES}/Windows\ Kits/8.0/Lib/win8/um/x86")
-      elseif(MSVC_VERSION EQUAL 1800)
-        set(CMAKE_LIBRARY_PATH "$ENV{PROGRAMFILES}/Windows\ Kits/8.1/Lib/win8/um/x86")
-      endif()
+      list(APPEND CNOID_SDK_INCLUDE_DIRS ${EIGEN3_INCLUDE_DIRS})
     endif()
   endif()
+endif()
 
-  find_package(Qt5Core)
-  find_package(Qt5Widgets)
-  find_package(Qt5OpenGL)
-  find_package(Qt5Network)
-  if(UNIX)
-    find_package(Qt5X11Extras)
-    set(QT_LIBRARIES Qt5::Core Qt5::Widgets Qt5::OpenGL Qt5::Network Qt5::X11Extras)
+if(NOT USE_EXTERNAL_EIGEN OR NOT EIGEN3_FOUND)
+  set(EIGEN3_INCLUDE_DIRS ${PROJECT_SOURCE_DIR}/thirdparty/eigen-3.2.10)
+  if(INSTALL_SDK)
+    install(DIRECTORY ${EIGEN3_INCLUDE_DIRS}/Eigen ${EIGEN3_INCLUDE_DIRS}/unsupported
+      DESTINATION ${CNOID_HEADER_SUBDIR})
   else()
-    set(QT_LIBRARIES Qt5::Core Qt5::Widgets Qt5::OpenGL Qt5::Network)
+    list(APPEND CNOID_SDK_INCLUDE_DIRS ${EIGEN3_INCLUDE_DIRS})
   endif()
-  set(QT5 TRUE)
+endif()
 
+include_directories(${EIGEN3_INCLUDE_DIRS})
+
+if(ENABLE_GUI)
+  # Qt5
+  set(qt5_components Core Gui Widgets Network)
+  if(UNIX)
+    list(APPEND qt5_components X11Extras)
+  elseif(MSVC)
+    file(GLOB qt_cmake_dirs "c:/Qt/5.??.?/msvc20??_??/lib/cmake" "d:/Qt/5.??.?/msvc20??_??/lib/cmake")
+    list(SORT qt_cmake_dirs)
+    list(REVERSE qt_cmake_dirs)
+  endif()
+  find_package(Qt5 COMPONENTS ${qt5_components} HINTS ${qt_cmake_dirs})
+  foreach(component ${qt5_components})
+    list(APPEND libs "Qt5::${component}")
+  endforeach()
+  set(QT_LIBRARIES ${libs})
   add_definitions(-DQT_NO_KEYWORDS -DQT_NO_OPENGL_ES_2)
   set(CMAKE_AUTOMOC OFF)
-  set(CMAKE_INCLUDE_CURRENT_DIR ON)
 
   if(MSVC)
     list(APPEND QT_INST_LIBRARIES 
       optimized Qt5Core debug Qt5Cored
       optimized Qt5Gui debug Qt5Guid
-      optimized Qt5OpenGL debug Qt5OpenGLd
       optimized Qt5Network debug Qt5Networkd
       optimized Qt5Widgets debug Qt5Widgetsd
       optimized libEGL debug libEGLd
@@ -541,200 +546,221 @@ macro(setup_qt5)
     install(DIRECTORY ${_qt5Core_install_prefix}/plugins/imageformats DESTINATION bin FILES_MATCHING PATTERN "*.dll")
 
     if(INSTALL_SDK_WITH_EXTLIBS)
-      foreach(dir
-          ${Qt5Core_INCLUDE_DIRS} ${Qt5Gui_INCLUDE_DIRS} ${Qt5OpenGL_INCLUDE_DIRS} ${Qt5Network_INCLUDE_DIRS})
-        install(DIRECTORY ${dir} DESTINATION ${CNOID_HEADER_SUBDIR})
+      unset(include_dirs)
+      foreach(dir ${Qt5Core_INCLUDE_DIRS} ${Qt5Gui_INCLUDE_DIRS} ${Qt5Widgets_INCLUDE_DIRS} ${Qt5Network_INCLUDE_DIRS})
+	if(NOT dir MATCHES "/include/?$")
+	  list(APPEND include_dirs ${dir})
+	endif()
       endforeach()
-    endif()
-  endif()
-endmacro()
-
-function(QTX_ADD_RESOURCES out_files)
-  set(in_files ${ARGN})
-  if(NOT QT5)
-    QT4_ADD_RESOURCES(out ${in_files})
-  else()
-    QT5_ADD_RESOURCES(out ${in_files})
-  endif()
-  set(${out_files} ${out} PARENT_SCOPE)
-endfunction()
-
-function(QTX_WRAP_CPP out_files)
-  set(in_files ${ARGN})
-  if(NOT QT5)
-    QT4_WRAP_CPP(out ${in_files} OPTIONS "-DBOOST_TT_HAS_OPERATOR_HPP_INCLUDED")
-  else()
-    QT5_WRAP_CPP(out ${in_files} OPTIONS "-DBOOST_TT_HAS_OPERATOR_HPP_INCLUDED")
-  endif()
-  set(${out_files} ${out} PARENT_SCOPE)  
-endfunction()
-
-# qt
-if(ENABLE_GUI)
-  set(DEFAULT_USE_QT5 TRUE)
-  if(MSVC)
-    if(MSVC_VERSION LESS 1700)
-      set(DEFAULT_USE_QT5 FALSE)
-    endif()
-    cmake_policy(SET CMP0020 OLD)
-  else()
-    find_package(Qt4 4.7.0 QUIET)
-    if(Qt4_FOUND)
-      find_package(Qt5Core 5.5.0 QUIET)
-      if(NOT Qt5Core_FOUND)
-	set(DEFAULT_USE_QT5 FALSE)
-      endif()
+      list(REMOVE_DUPLICATES include_dirs)
+      install(DIRECTORY ${include_dirs} DESTINATION ${CNOID_HEADER_SUBDIR})
     endif()
   endif()
 
-  option(USE_QT5 "Use Qt5" ${DEFAULT_USE_QT5})
-
-  if(USE_QT5)
-    setup_qt5()
-  else()
-    setup_qt4()
+  if(NOT INSTALL_SDK_WITH_EXTLIBS)
+    list(APPEND CNOID_SDK_INCLUDE_DIRS
+      ${Qt5Core_INCLUDE_DIRS}
+      ${Qt5Gui_INCLUDE_DIRS}
+      ${Qt5Widgets_INCLUDE_DIRS}
+      ${Qt5OpenGL_INCLUDE_DIRS}
+      ${Qt5Network_INCLUDE_DIRS})
   endif()
-
 endif()
 
+# Assimp
+if(MSVC AND (NOT DEFINED ENABLE_ASSIMP))
+  file(GLOB assimp_dirs "c:/local/Assimp*/lib/cmake/assimp-*" "d:/local/Assimp*/lib/cmake/assimp-*")
+  find_package(ASSIMP QUIET HINTS ${assimp_dirs})
+else()
+  find_package(ASSIMP QUIET)
+endif()
+if(ASSIMP_FOUND)
+  set(is_assimp_enabled ON)
+else()
+  set(is_assimp_enabled OFF)
+endif()
+option(ENABLE_ASSIMP "Enable Assimp functions" ${is_assimp_enabled})
+if(ENABLE_ASSIMP AND (NOT ASSIMP_FOUND))
+  message(FATAL_ERROR "Please specify the directory containing the CMake config files of the ASSIMP library to ASSIMP_DIR.")
+endif()
+if(MSVC)
+  if(INSTALL_RUNTIME_DEPENDENCIES)
+    foreach(library ${ASSIMP_LIBRARIES})
+      install(PROGRAMS ${ASSIMP_ROOT_DIR}/bin/${library}.dll DESTINATION bin CONFIGURATIONS Release Debug)
+    endforeach()
+  endif()
+endif()
 
 # CORBA, omniORB
 option(ENABLE_CORBA "Enable CORBA related modules / plugins" OFF)
 
 if(ENABLE_CORBA)
-
+  # The OMNIDYNAMIC_XXX variables are used for storing the omniORB information
+  # because the OMNIORB_XXX varialbes collide with the OpenRTM-aist configuration
+  # and the omniDynamic4 library is actually required to build some modules.
   if(UNIX)
-    if(NOT OMNIORB_DIR)
-      #pkg_check_modules(OMNIORB omniORB4)
-      pkg_check_modules(OMNIORB omniDynamic4)
-      if(OMNIORB_FOUND)
-	set(OMNIORB_DIR ${OMNIORB_PREFIX})
+    if(NOT OMNIDYNAMIC_DIR)
+      pkg_check_modules(OMNIDYNAMIC omniDynamic4)
+      if(OMNIDYNAMIC_FOUND)
+	set(OMNIDYNAMIC_DIR ${OMNIDYNAMIC_PREFIX})
       endif()
     else()
-      set(OMNIORB_FOUND TRUE)
-      set(OMNIORB_INCLUDE_DIRS ${OMNIORB_DIR}/include)
-      set(OMNIORB_LIBRARY_DIRS ${OMNIORB_DIR}/lib)
+      set(OMNIDYNAMIC_FOUND TRUE)
+      set(OMNIDYNAMIC_INCLUDE_DIRS ${OMNIDYNAMIC_DIR}/include)
+      set(OMNIDYNAMIC_LIBRARY_DIRS ${OMNIDYNAMIC_DIR}/lib)
     endif()
   elseif(MSVC)
-    if(NOT OMNIORB_DIR)
+    if(NOT OMNIDYNAMIC_DIR)
       if(NOT $ENV{OMNI_ROOT} STREQUAL "")
-	set(OMNIORB_DIR $ENV{OMNI_ROOT})
+	set(OMNIDYNAMIC_DIR $ENV{OMNI_ROOT})
       endif()
     endif()
-    if(OMNIORB_DIR)
-      set(OMNIORB_FOUND TRUE)
-      set(OMNIORB_INCLUDE_DIRS ${OMNIORB_DIR}/include)
-      set(OMNIORB_LIBRARY_DIRS ${OMNIORB_DIR}/lib/x86_win32)
-      set(OMNIORB_BINARY_DIR ${OMNIORB_DIR}/bin/x86_win32)
-      set(OMNIORB_CFLAGS -D__WIN32__ -D__x86__ )
+    if(OMNIDYNAMIC_DIR)
+      set(OMNIDYNAMIC_FOUND TRUE)
+      set(OMNIDYNAMIC_INCLUDE_DIRS ${OMNIDYNAMIC_DIR}/include)
+      set(OMNIDYNAMIC_LIBRARY_DIRS ${OMNIDYNAMIC_DIR}/lib/x86_win32)
+      set(OMNIDYNAMIC_BINARY_DIR ${OMNIDYNAMIC_DIR}/bin/x86_win32)
+      set(OMNIDYNAMIC_CFLAGS -D__WIN32__ -D__x86__ )
 
-      file(GLOB libomniorb RELATIVE ${OMNIORB_LIBRARY_DIRS} "${OMNIORB_LIBRARY_DIRS}/omniORB???_rt.lib")
+      file(GLOB libomniorb RELATIVE ${OMNIDYNAMIC_LIBRARY_DIRS} "${OMNIDYNAMIC_LIBRARY_DIRS}/omniORB???_rt.lib")
       get_filename_component(libomniorb ${libomniorb} NAME_WE)
 
-      file(GLOB libomnithread RELATIVE ${OMNIORB_LIBRARY_DIRS} "${OMNIORB_LIBRARY_DIRS}/omnithread??_rt.lib")
+      file(GLOB libomnithread RELATIVE ${OMNIDYNAMIC_LIBRARY_DIRS} "${OMNIDYNAMIC_LIBRARY_DIRS}/omnithread??_rt.lib")
       get_filename_component(libomnithread ${libomnithread} NAME_WE)
 
-      file(GLOB libomnidynamic RELATIVE ${OMNIORB_LIBRARY_DIRS} "${OMNIORB_LIBRARY_DIRS}/omniDynamic???_rt.lib")
+      file(GLOB libomnidynamic RELATIVE ${OMNIDYNAMIC_LIBRARY_DIRS} "${OMNIDYNAMIC_LIBRARY_DIRS}/omniDynamic???_rt.lib")
       get_filename_component(libomnidynamic ${libomnidynamic} NAME_WE)
 
-      set(OMNIORB_LIBRARIES_RELEASE ${libomniorb} ${libomnithread} ${libomnidynamic})
-      foreach(library ${OMNIORB_LIBRARIES_RELEASE})
-	list(APPEND OMNIORB_LIBRARIES optimized ${library} debug ${library}d )
+      set(OMNIDYNAMIC_LIBRARIES_RELEASE ${libomniorb} ${libomnithread} ${libomnidynamic})
+      foreach(library ${OMNIDYNAMIC_LIBRARIES_RELEASE})
+	list(APPEND OMNIDYNAMIC_LIBRARIES optimized ${library} debug ${library}d )
       endforeach()
 
-      file(GLOB libomniorb RELATIVE ${OMNIORB_BINARY_DIR} "${OMNIORB_BINARY_DIR}/omniORB*_rt.dll")
+      file(GLOB libomniorb RELATIVE ${OMNIDYNAMIC_BINARY_DIR} "${OMNIDYNAMIC_BINARY_DIR}/omniORB*_rt.dll")
       get_filename_component(libomniorb ${libomniorb} NAME_WE)
 
-      file(GLOB libomnithread RELATIVE ${OMNIORB_BINARY_DIR} "${OMNIORB_BINARY_DIR}/omnithread*_rt.dll")
+      file(GLOB libomnithread RELATIVE ${OMNIDYNAMIC_BINARY_DIR} "${OMNIDYNAMIC_BINARY_DIR}/omnithread*_rt.dll")
       get_filename_component(libomnithread ${libomnithread} NAME_WE)
 
-      file(GLOB libomnidynamic RELATIVE ${OMNIORB_BINARY_DIR} "${OMNIORB_BINARY_DIR}/omniDynamic*_rt.dll")
+      file(GLOB libomnidynamic RELATIVE ${OMNIDYNAMIC_BINARY_DIR} "${OMNIDYNAMIC_BINARY_DIR}/omniDynamic*_rt.dll")
       get_filename_component(libomnidynamic ${libomnidynamic} NAME_WE)
 
-      set(OMNIORB_DLL_BASES ${libomniorb} ${libomnithread} ${libomnidynamic})
+      set(OMNIDYNAMIC_DLL_BASES ${libomniorb} ${libomnithread} ${libomnidynamic})
 
       if(INSTALL_RUNTIME_DEPENDENCIES)
-	foreach(library ${OMNIORB_DLL_BASES})
-	  install(PROGRAMS "${OMNIORB_BINARY_DIR}/${library}.dll" DESTINATION bin CONFIGURATIONS Release RelWithDebInfo MinSizeRel)
-	  install(PROGRAMS "${OMNIORB_BINARY_DIR}/${library}d.dll" DESTINATION bin CONFIGURATIONS Debug)
+	foreach(library ${OMNIDYNAMIC_DLL_BASES})
+	  install(PROGRAMS "${OMNIDYNAMIC_BINARY_DIR}/${library}.dll" DESTINATION bin CONFIGURATIONS Release RelWithDebInfo MinSizeRel)
+	  install(PROGRAMS "${OMNIDYNAMIC_BINARY_DIR}/${library}d.dll" DESTINATION bin CONFIGURATIONS Debug)
 	endforeach()
       endif()
     endif()
   endif()
   
-  include_directories(${OMNIORB_INCLUDE_DIRS})
-  link_directories(${OMNIORB_LIBRARY_DIRS})
-  add_definitions(${OMNIORB_CFLAGS})
+  include_directories(${OMNIDYNAMIC_INCLUDE_DIRS})
+  link_directories(${OMNIDYNAMIC_LIBRARY_DIRS})
+  add_definitions(${OMNIDYNAMIC_CFLAGS})
   
-  set(OMNIORB_DIR ${OMNIORB_DIR} CACHE PATH "The top directory of omniORB")
-  set(OMNIORB_CFLAGS ${OMNIORB_CFLAGS} CACHE STRING "Compile flags for omniORB")
+  set(OMNIDYNAMIC_DIR ${OMNIDYNAMIC_DIR} CACHE PATH "The top directory of omniORB")
+  set(OMNIDYNAMIC_CFLAGS ${OMNIDYNAMIC_CFLAGS} CACHE STRING "Compile flags for omniORB")
 
-  if(NOT OMNIORB_FOUND)
+  if(NOT OMNIDYNAMIC_FOUND)
     message(FATAL_ERROR "CORBA-related modules require the omniORB library but the library is not found.")
   endif()
 
-  function(idl_compile_cpp out_cpp_files out_header_files subdir)
-  
-    set(corba_src_dir ${CMAKE_CURRENT_SOURCE_DIR}/${subdir})
-    set(corba_dir ${PROJECT_SOURCE_DIR}/include/cnoid/${subdir})
+  function(idl_compile_cpp)
 
-    set(idl_names ${ARGV})
+    set(options LOCAL)
+    cmake_parse_arguments(args LOCAL "" "" ${ARGN})
+    list(GET args_UNPARSED_ARGUMENTS 0 out_cpp_files)
+    list(GET args_UNPARSED_ARGUMENTS 1 out_header_files)
+    list(GET args_UNPARSED_ARGUMENTS 2 subdir)
+    set(idl_names ${args_UNPARSED_ARGUMENTS})
     list(REMOVE_AT idl_names 0 1 2)
-    
-    set(idl_flags -C ${corba_src_dir} -bcxx -Wbh=.hh -Wbs=Sk.cpp -Wba -Wbd=DynSk.cpp -Wbkeep_inc_path -I${PROJECT_SOURCE_DIR}/include)
 
+    set(corba_src_dir ${CMAKE_CURRENT_SOURCE_DIR}/${subdir})
+    set(corba_binary_dir ${CMAKE_CURRENT_BINARY_DIR}/${subdir})
+    file(MAKE_DIRECTORY ${corba_binary_dir})
+    set(idl_flags -C ${corba_binary_dir} -bcxx -Wbh=.hh -Wbs=Sk.cpp -Wba -Wbd=DynSk.cpp -Wbkeep_inc_path
+      -I${PROJECT_SOURCE_DIR}/include -I${PROJECT_BINARY_DIR}/include)
     foreach(idl_include_dir ${IDL_INCLUDE_DIRS})
       set(idl_flags ${idl_flags} -I${idl_include_dir})
     endforeach()
-    
-    # copy idl files to the system include directory
-    file(MAKE_DIRECTORY ${corba_dir})
-    foreach(idl_name ${idl_names})
-      set(idl_file ${corba_src_dir}/${idl_name}.idl)
-      if(UNIX)
-	add_custom_command(
-	  OUTPUT ${corba_dir}/${idl_name}.idl
-	  COMMAND cp ${idl_file} ${corba_dir}
-	  DEPENDS ${idl_file}
-	  COMMENT "Copying ${idl_name}.idl to ${corba_dir}"
-	  )
-      elseif(MSVC)
-	file(TO_NATIVE_PATH ${corba_src_dir}/${idl_name}.idl src)
-	file(TO_NATIVE_PATH ${corba_dir} dest)
-	add_custom_command(
-	  OUTPUT ${corba_dir}/${idl_name}.idl
-	  COMMAND copy ${src} ${dest}
-	  DEPENDS ${idl_file}
-	  COMMENT "Copying ${idl_name}.idl to ${corba_dir}")
-      endif()
-      set(idl_files ${idl_files} ${corba_dir}/${idl_name}.idl)
-      set(idl_cpp_files ${idl_cpp_files} ${subdir}/${idl_name}Sk.cpp ${subdir}/${idl_name}DynSk.cpp)
-      set(idl_h_files ${idl_h_files} ${PROJECT_SOURCE_DIR}/include/cnoid/${subdir}/${idl_name}.hh)
-    endforeach()
 
-    # idl compile
-    foreach(idl_name ${idl_names})
-      if(UNIX)
-	add_custom_command(
-	  OUTPUT ${corba_src_dir}/${idl_name}.hh ${corba_dir}/${idl_name}.hh ${corba_src_dir}/${idl_name}DynSk.cpp ${corba_src_dir}/${idl_name}Sk.cpp
-	  COMMAND omniidl ${idl_flags} ${corba_dir}/${idl_name}.idl
-	  COMMAND cp ${corba_src_dir}/${idl_name}.hh ${corba_dir}
-	  DEPENDS ${idl_files}
-	  COMMENT "Generating the C++ stubs and skeletons of ${idl_name}.idl"
-	  )
-      elseif(MSVC)
-	file(TO_NATIVE_PATH ${corba_src_dir}/${idl_name}.hh src)
-	file(TO_NATIVE_PATH ${corba_dir} dest)
-	add_custom_command(
-	  OUTPUT ${corba_src_dir}/${idl_name}.hh ${corba_dir}/${idl_name}.hh ${corba_src_dir}/${idl_name}Sk.cpp ${corba_src_dir}/${idl_name}DynSk.cpp
-	  COMMAND for %%A in \("${OMNIORB_DIR}/bin/x86_win32"\) do %%~sA\\omniidl ${idl_flags} ${corba_dir}/${idl_name}.idl
-	  COMMAND copy ${src} ${dest}
-	  DEPENDS ${idl_files}
-	  COMMENT "Generating the C++ stubs and skeletons of ${idl_name}.idl"
-	  )
-      endif()
-    endforeach()
-    
+    if(args_LOCAL)
+      unset(idl_files)
+      foreach(idl_name ${idl_names})
+	set(idl_files ${idl_files} ${corba_src_dir}/${idl_name}.idl)
+	set(idl_cpp_files ${idl_cpp_files} ${corba_binary_dir}/${idl_name}Sk.cpp ${corba_binary_dir}/${idl_name}DynSk.cpp)
+	set(idl_h_files ${idl_h_files} ${corba_binary_dir}/${idl_name}.hh)
+      endforeach()
+      foreach(idl_name ${idl_names})
+	if(UNIX)
+	  add_custom_command(
+	    OUTPUT ${corba_binary_dir}/${idl_name}.hh ${corba_binary_dir}/${idl_name}DynSk.cpp ${corba_binary_dir}/${idl_name}Sk.cpp
+	    COMMAND omniidl ${idl_flags} ${corba_src_dir}/${idl_name}.idl
+	    DEPENDS ${idl_files}
+	    COMMENT "Generating the C++ stubs and skeletons of ${idl_name}.idl"
+	    )
+	elseif(MSVC)
+	  add_custom_command(
+	    OUTPUT ${corba_binary_dir}/${idl_name}.hh ${corba_binary_dir}/${idl_name}Sk.cpp ${corba_binary_dir}/${idl_name}DynSk.cpp
+	    COMMAND for %%A in \("${OMNIDYNAMIC_DIR}/bin/x86_win32"\) do %%~sA\\omniidl ${idl_flags} ${corba_src_dir}/${idl_name}.idl
+	    DEPENDS ${idl_files}
+	    COMMENT "Generating the C++ stubs and skeletons of ${idl_name}.idl"
+	    )
+	endif()
+      endforeach()
+    else() # Make public
+      # copy idl files to the system include directory
+      set(corba_dir ${PROJECT_BINARY_DIR}/include/cnoid/${subdir})
+      file(MAKE_DIRECTORY ${corba_dir})
+      foreach(idl_name ${idl_names})
+	set(idl_file ${corba_src_dir}/${idl_name}.idl)
+	if(UNIX)
+	  add_custom_command(
+	    OUTPUT ${corba_dir}/${idl_name}.idl
+	    COMMAND cp ${idl_file} ${corba_dir}
+	    DEPENDS ${idl_file}
+	    COMMENT "Copying ${idl_name}.idl to ${corba_dir}"
+	    )
+	elseif(MSVC)
+	  file(TO_NATIVE_PATH ${corba_src_dir}/${idl_name}.idl src)
+	  file(TO_NATIVE_PATH ${corba_dir} dest)
+	  add_custom_command(
+	    OUTPUT ${corba_dir}/${idl_name}.idl
+	    COMMAND copy ${src} ${dest}
+	    DEPENDS ${idl_file}
+	    COMMENT "Copying ${idl_name}.idl to ${corba_dir}")
+	endif()
+	set(idl_files ${idl_files} ${corba_dir}/${idl_name}.idl)
+	set(idl_cpp_files ${idl_cpp_files} ${corba_binary_dir}/${idl_name}Sk.cpp ${corba_binary_dir}/${idl_name}DynSk.cpp)
+	set(idl_h_files ${idl_h_files} ${corba_dir}/${idl_name}.hh)
+      endforeach()
+      # idl compile
+      foreach(idl_name ${idl_names})
+	if(UNIX)
+	  add_custom_command(
+	    OUTPUT ${corba_binary_dir}/${idl_name}.hh ${corba_dir}/${idl_name}.hh ${corba_binary_dir}/${idl_name}DynSk.cpp ${corba_binary_dir}/${idl_name}Sk.cpp
+            COMMAND omniidl ${idl_flags} ${corba_dir}/${idl_name}.idl
+            COMMAND cp ${corba_binary_dir}/${idl_name}.hh ${corba_dir}
+            DEPENDS ${idl_files}
+            COMMENT "Generating the C++ stubs and skeletons of ${idl_name}.idl"
+            )
+	elseif(MSVC)
+	  file(TO_NATIVE_PATH ${corba_binary_dir}/${idl_name}.hh src)
+	  file(TO_NATIVE_PATH ${corba_dir} dest)
+	  add_custom_command(
+            OUTPUT ${corba_binary_dir}/${idl_name}.hh ${corba_dir}/${idl_name}.hh ${corba_binary_dir}/${idl_name}Sk.cpp ${corba_binary_dir}/${idl_name}DynSk.cpp
+            COMMAND for %%A in \("${OMNIDYNAMIC_DIR}/bin/x86_win32"\) do %%~sA\\omniidl ${idl_flags} ${corba_dir}/${idl_name}.idl
+            COMMAND copy ${src} ${dest}
+            DEPENDS ${idl_files}
+            COMMENT "Generating the C++ stubs and skeletons of ${idl_name}.idl"
+            )
+	endif()
+      endforeach()
+      install(FILES ${idl_files} ${idl_h_files} DESTINATION ${CNOID_HEADER_SUBDIR}/cnoid/${subdir})
+    endif()
+
     set(${out_cpp_files} ${idl_cpp_files} PARENT_SCOPE)
     set(${out_header_files} ${idl_h_files} PARENT_SCOPE)
 
@@ -821,14 +847,64 @@ if(ENABLE_CORBA)
 
 endif(ENABLE_CORBA)
 
+# OpenRTM
+if(BUILD_OPENRTM_PLUGIN)
+  find_package(OpenRTM REQUIRED CONFIG)
 
-# doxygen
-# find_package(Doxygen)
+  # Check version
+  if(NOT OPENRTM_VERSION VERSION_LESS "1.2.0")
+    list(APPEND OPENRTM_DEFINITIONS -DOPENRTM_VERSION12)
+    list(APPEND OPENRTM_DEFINITIONS -Wno-deprecated)
+
+  elseif(OPENRTM_VERSION VERSION_EQUAL "1.1.2")
+    list(APPEND OPENRTM_DEFINITIONS -DOPENRTM_VERSION11)
+    # Remove extra "-I" from the elements of OPENRTM_INCLUDE_DIRS
+    unset(include_dirs)
+    foreach(dir ${OPENRTM_INCLUDE_DIRS})
+      string(REGEX REPLACE "^-I" "" stripped ${dir})
+      list(APPEND include_dirs ${stripped})
+    endforeach()
+    set(OPENRTM_INCLUDE_DIRS ${include_dirs})
+    # Remove extra "-L" from the elements of OPENRTM_LIBRARY_DIRS
+    unset(library_dirs)
+    foreach(dir ${OPENRTM_LIBRARY_DIRS})
+      string(REGEX REPLACE "^-L" "" stripped ${dir})
+      list(APPEND library_dirs ${stripped})
+    endforeach()
+    set(OPENRTM_LIBRARY_DIRS ${library_dirs})
+
+  else()
+    message(FATAL_ERROR "OpenRTM version is INVALID.")
+  endif()
+
+  set(IDL_INCLUDE_DIRS ${IDL_INCLUDE_DIRS} ${OPENRTM_INCLUDE_DIRS})
+
+  option(USE_BUILTIN_CAMERA_IMAGE_IDL "Enable this option when you run hrpsys-base on Choreonoid" OFF)
+  if(USE_BUILTIN_CAMERA_IMAGE_IDL)
+    list(APPEND OPENRTM_DEFINITIONS -DUSE_BUILTIN_CAMERA_IMAGE_IDL)
+  else()
+    if(MSVC)
+      unset(camera_library)
+      foreach(dir ${OPENRTM_LIBRARY_DIRS})
+        file(GLOB libs "${dir}/rtmCamera*.lib")
+        foreach(lib ${libs})
+          if(lib MATCHES "(rtmCamera.*d)\\.lib$")
+            list(APPEND camera_library debug;${CMAKE_MATCH_1})
+          elseif(lib MATCHES "(rtmCamera.*)\\.lib$")
+            list(APPEND camera_library optimized;${CMAKE_MATCH_1})
+          endif()
+        endforeach()
+      endforeach()
+      set(OPENRTM_CAMERA_LIBRARY ${camera_library})
+    else()
+      set(OPENRTM_CAMERA_LIBRARY rtmCamera)
+    endif()
+  endif()
+endif()
 
 set_property(DIRECTORY APPEND PROPERTY COMPILE_DEFINITIONS $<$<CONFIG:Debug>:CNOID_DEBUG>)
 
 if(UNIX)
-  
   option(PUT_EXTRA_WARNINGS "Put extra warnings in compile" OFF)
   if(PUT_EXTRA_WARNINGS)
     set(extra_warning_options "-Wunused -Woverloaded-virtual -Wsign-compare")
@@ -841,29 +917,16 @@ if(UNIX)
   set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wreturn-type")
 
   option(CHECK_UNRESOLVED_SYMBOLS "check unresolved symbols in the object files when creating shared libraries" OFF)
-  #mark_as_advanced(CHECK_UNRESOLVED_SYMBOLS)
   if(CHECK_UNRESOLVED_SYMBOLS)
     if(NOT APPLE)
       set(CMAKE_SHARED_LINKER_FLAGS "${CMAKE_SHARED_LINKER_FLAGS} -Wl,--unresolved-symbols=ignore-in-shared-libs -Wl,--warn-unresolved-symbols")
     endif()
   endif()
 
-
-  # The RTTI such as dynamic_cast cannot work well with this option in the older GCC like that of Ubuntu 10.04.
-  # So currently this option should be only enabled for modules which may cause symbol conficts
-  #set(CMAKE_SHARED_LINKER_FLAGS "${CMAKE_SHARED_LINKER_FLAGS} -Wl,-Bsymbolic") 
-
 elseif(MSVC)
   set_property(DIRECTORY APPEND PROPERTY COMPILE_DEFINITIONS _CRT_SECURE_NO_WARNINGS)
   set_property(DIRECTORY APPEND PROPERTY COMPILE_DEFINITIONS NOMINMAX _USE_MATH_DEFINES)
-  #list(APPEND CMAKE_CXX_FLAGS "/wd4250 /wd4251 /wd4275")
 endif()
-
-include_directories(${PROJECT_SOURCE_DIR})
-include_directories(${PROJECT_SOURCE_DIR}/include)
-
-link_directories(${PROJECT_BINARY_DIR}/lib)
-link_directories(${PROJECT_BINARY_DIR}/${CNOID_PLUGIN_SUBDIR})
 
 #Simulation profiling
 option(ENABLE_SIMULATION_PROFILING "Enable simulation plofiling" OFF)
@@ -875,6 +938,10 @@ endif()
 install(FILES NEWS DESTINATION ${CNOID_DOC_SUBDIR})
 install(FILES LICENSE DESTINATION ${CNOID_DOC_SUBDIR})
 
+option(BUILD_DOCUMENTS "Build the API reference manual" OFF)
+if(BUILD_DOCUMENTS)
+  add_subdirectory(doc)
+endif()
 
 if(MSVC)
   if(CMAKE_CL_64)
@@ -885,27 +952,6 @@ if(MSVC)
     link_directories(${PROJECT_SOURCE_DIR}/thirdparty/windows/lib)
   endif()
 endif()
-
-
-function(make_header_public)
-  set(header_file ${ARGV0})
-  if(ARGC EQUAL 1)
-    get_filename_component(header ${header_file} NAME_WE)
-  else()
-    set(header ${ARGV1})
-  endif()
-  file(RELATIVE_PATH header_path ${PROJECT_SOURCE_DIR} ${CMAKE_CURRENT_SOURCE_DIR}/${header_file})
-  file(WRITE
-    "${PROJECT_SOURCE_DIR}/include/cnoid/${header}"
-    "#include \"${header_path}\"\n")
-endfunction()
-
-function(make_headers_public)
-  foreach(header_file ${ARGV})
-    make_header_public(${header_file})
-  endforeach()
-endfunction()
-
 
 function(add_cnoid_library)
 
@@ -1012,7 +1058,6 @@ function(apply_common_setting_for_target target)
       if(headers)
         source_group("Header Files" FILES ${headers})
       endif()
-      #set_target_properties(${target} PROPERTIES PREFIX "../" IMPORT_PREFIX "../")
     endif()
 
     get_target_property(existing_compile_flags ${target} COMPILE_FLAGS)
@@ -1046,9 +1091,16 @@ function(apply_common_setting_for_library_core target)
         ARCHIVE DESTINATION lib CONFIGURATIONS Release Debug RelWithDebInfo MinSizeRel)
     endif()
   else()
-    install(TARGETS ${target}
-      RUNTIME DESTINATION bin CONFIGURATIONS Release Debug RelWithDebInfo MinSizeRel
-      LIBRARY DESTINATION lib CONFIGURATIONS Release Debug RelWithDebInfo MinSizeRel)
+    if(INSTALL_SDK)
+      install(TARGETS ${target}
+        RUNTIME DESTINATION bin CONFIGURATIONS Release Debug RelWithDebInfo MinSizeRel
+        LIBRARY DESTINATION lib CONFIGURATIONS Release Debug RelWithDebInfo MinSizeRel
+        ARCHIVE DESTINATION lib CONFIGURATIONS Release Debug RelWithDebInfo MinSizeRel)
+    else()
+      install(TARGETS ${target}
+        RUNTIME DESTINATION bin CONFIGURATIONS Release Debug RelWithDebInfo MinSizeRel
+        LIBRARY DESTINATION lib CONFIGURATIONS Release Debug RelWithDebInfo MinSizeRel)
+    endif()
   endif()
 
 endfunction()
@@ -1108,35 +1160,28 @@ if(ENABLE_PYTHON)
     if(MSVC)
       set_target_properties(${target} PROPERTIES SUFFIX .pyd)
     else()
-      if(USE_BOOST_PYTHON)
-	set_target_properties(${target}  PROPERTIES
-	  COMPILE_DEFINITIONS "BOOST_PYTHON_USE_GCC_SYMBOL_VISIBILITY" )
+      if(ENABLE_GCC_FVISIBILITY_HIDDEN)
+	get_target_property(compile_flags ${target} COMPILE_FLAGS)
+	if(compile_flags)
+	  set_target_properties(${target} PROPERTIES COMPILE_FLAGS "${compile_flags} -fvisibility=hidden")
+	else()
+	  set_target_properties(${target} PROPERTIES COMPILE_FLAGS "-fvisibility=hidden")
+	endif()
       endif()
-      if(USE_PYBIND11)
-	if(ENABLE_GCC_FVISIBILITY_HIDDEN)
-	  get_target_property(compile_flags ${target} COMPILE_FLAGS)
-	  if(compile_flags)
-	    set_target_properties(${target} PROPERTIES COMPILE_FLAGS "${compile_flags} -fvisibility=hidden")
-	  else()
-	    set_target_properties(${target} PROPERTIES COMPILE_FLAGS "-fvisibility=hidden")
-	  endif()
+      if(NOT ${CMAKE_BUILD_TYPE} MATCHES Debug)
+	if(CMAKE_CXX_COMPILER_ID MATCHES "GNU")
+	  target_compile_options(${target} PRIVATE "-flto;-fno-fat-lto-objects")
+	  set(link_lto_flags "-flto")
+	elseif(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+	  target_compile_options(${target} PRIVATE "-flto=thin")
+	  set(link_lto_flags "-flto=thin")
 	endif()
-	if(NOT ${CMAKE_BUILD_TYPE} MATCHES Debug)
-	  if(CMAKE_CXX_COMPILER_ID MATCHES "GNU")
-	    target_compile_options(${target} PRIVATE "-flto;-fno-fat-lto-objects")
-	    set(link_lto_flags "-flto")
-	  elseif(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
-	    target_compile_options(${target} PRIVATE "-flto=thin")
-	    set(link_lto_flags "-flto=thin")
-	  endif()
-	  get_target_property(existing_link_flags ${target} LINK_FLAGS)
-	  if(existing_link_flags STREQUAL existing_link_flags-NOTFOUND)
-	    set(existing_link_flags "")
-	  endif()
-	  set_target_properties(${target} PROPERTIES LINK_FLAGS "${existing_link_flags} ${link_lto_flags}")
-
-          #add_custom_command(TARGET ${target} POST_BUILD COMMAND strip $<TARGET_FILE:${target}>)
+	get_target_property(existing_link_flags ${target} LINK_FLAGS)
+	if(existing_link_flags STREQUAL existing_link_flags-NOTFOUND)
+	  set(existing_link_flags "")
 	endif()
+	set_target_properties(${target} PROPERTIES LINK_FLAGS "${existing_link_flags} ${link_lto_flags}")
+        #add_custom_command(TARGET ${target} POST_BUILD COMMAND strip $<TARGET_FILE:${target}>)
       endif()
     endif()
 
@@ -1165,20 +1210,6 @@ if(ENABLE_PYTHON)
       LIBRARY DESTINATION ${CNOID_PYTHON_SUBDIR}/cnoid CONFIGURATIONS Release Debug RelWithDebInfo MinSizeRel)
   endfunction()
 
-  function(apply_common_setting_for_python_module target)
-    set(headers ${ARGV1})
-    apply_common_setting_for_target(${target} "${headers}")
-    if(INSTALL_SDK)
-      if(MSVC)
-	install(TARGETS ${target}
-	  ARCHIVE DESTINATION lib CONFIGURATIONS Release Debug RelWithDebInfo MinSizeRel)
-      endif()
-      if(headers)
-	file(RELATIVE_PATH rel_src_dir ${PROJECT_SOURCE_DIR} ${CMAKE_CURRENT_SOURCE_DIR})
-	install(FILES ${headers} DESTINATION ${CNOID_HEADER_SUBDIR}/cnoid/${rel_src_dir})
-      endif()
-    endif()
-  endfunction()
 endif()
 
 
@@ -1228,30 +1259,19 @@ if(ENABLE_LUA)
       endif()
     endif()
   endfunction()
-    
-
 endif()
 
-#function(make_gettext_mofiles out_mofiles)
 function(make_gettext_mofiles target out_mofiles)
-
-  configure_file(${PROJECT_SOURCE_DIR}/src/Util/gettext.h.in ${CMAKE_CURRENT_SOURCE_DIR}/gettext.h)
- 
-  set(${out_mofiles} "")
-
+  set(${out_mofiles} "" PARENT_SCOPE)
   if(NOT CNOID_ENABLE_GETTEXT)
     return()
   endif()
-
   file(GLOB pofiles ${CMAKE_CURRENT_SOURCE_DIR}/po/*.po)
-
   foreach(pofile ${pofiles})
     get_filename_component(lang ${pofile} NAME_WE)
     set(message_location share/locale/${lang}/LC_MESSAGES)
-    #file(MAKE_DIRECTORY ${PROJECT_BINARY_DIR}/${message_location})
-    #set(mofile ${PROJECT_BINARY_DIR}/${message_location}/${target}-${CNOID_VERSION}.mo)
-    file(MAKE_DIRECTORY ${PROJECT_SOURCE_DIR}/${message_location})
-    set(mofile ${PROJECT_SOURCE_DIR}/${message_location}/${target}-${CNOID_VERSION}.mo)
+    file(MAKE_DIRECTORY ${PROJECT_BINARY_DIR}/${message_location})
+    set(mofile ${PROJECT_BINARY_DIR}/${message_location}/${target}-${CNOID_VERSION}.mo)
     add_custom_command(
       OUTPUT ${mofile}
       COMMAND ${GETTEXT_MSGFMT_EXECUTABLE} -o ${mofile} ${pofile}
@@ -1260,29 +1280,31 @@ function(make_gettext_mofiles target out_mofiles)
     list(APPEND mofiles ${mofile})
     install(FILES ${mofile} DESTINATION "share/locale/${lang}/LC_MESSAGES")
   endforeach()
-
   set(${out_mofiles} ${mofiles} PARENT_SCOPE)
-
 endfunction()
 
 # libyaml
-if(UNIX)
-  set(USE_EXTERNAL_YAML_DEFAULT ON)
-elseif(MSVC)
-  set(USE_EXTERNAL_YAML_DEFAULT OFF)
-endif()
-option(USE_EXTERNAL_YAML "Use the yaml library installed in an external directory" ${USE_EXTERNAL_YAML_DEFAULT})
-
-if(USE_EXTERNAL_YAML)
-  set(LIBYAML_DIR CACHE PATH "set the top directory of the libyaml")
-  if(LIBYAML_DIR)
-    include_directories(${LIBYAML_DIR}/include)
-    link_directories(${LIBYAML_DIR}/lib)
-  endif()
+if(MSVC)
+  set(USE_EXTERNAL_LIBYAML_DEFAULT OFF)
 else()
-  add_subdirectory(thirdparty/yaml-0.1.7)
-  include_directories(${PROJECT_SOURCE_DIR}/thirdparty/yaml-0.1.7/include)
+  set(USE_EXTERNAL_LIBYAML_DEFAULT ON)
 endif()
+option(USE_EXTERNAL_LIBYAML "Use the yaml library installed in an external directory" ${USE_EXTERNAL_LIBYAML_DEFAULT})
+
+if(USE_EXTERNAL_LIBYAML)
+  pkg_check_modules(LIBYAML yaml-0.1 QUIET)
+endif()
+
+if(NOT USE_EXTERNAL_LIBYAML OR NOT LIBYAML_FOUND)
+  add_subdirectory(thirdparty/yaml-0.1.7)
+  set(LIBYAML_INCLUDE_DIRS ${PROJECT_SOURCE_DIR}/thirdparty/yaml-0.1.7/include)
+  set(LIBYAML_LIBRARY_DIRS ${PROJECT_SOURCE_DIR}/thirdparty/yaml-0.1.7/lib)
+  set(LIBYAML_LIBRARIES yaml)
+endif()
+
+# pugixml
+add_subdirectory(thirdparty/pugixml-1.9)
+include_directories(${PROJECT_SOURCE_DIR}/thirdparty/pugixml-1.9/src)
 
 if(UNIX)
   # png
@@ -1296,15 +1318,24 @@ elseif(MSVC)
   set(PNG_LIBRARY libpng)
   set(JPEG_LIBRARY jpeg)
   include_directories(${PROJECT_SOURCE_DIR}/thirdparty/lpng1232)
-  include_directories(${PROJECT_SOURCE_DIR}/thirdparty/Jpeg-6b)
+  include_directories(${PROJECT_SOURCE_DIR}/thirdparty/Jpeg-9c)
   include_directories(${PROJECT_SOURCE_DIR}/thirdparty/zlib123)
   add_subdirectory(thirdparty/lpng1232)
-  add_subdirectory(thirdparty/Jpeg-6b)
+  add_subdirectory(thirdparty/Jpeg-9c)
   add_subdirectory(thirdparty/zlib123)
+endif()
+
+# fmtlib
+find_package(fmt QUIET)
+if(NOT fmt_FOUND)
+  add_subdirectory(thirdparty/fmt-5.3.0)
+  # Is this necessary when building on Windows?
+  include_directories(${PROJECT_SOURCE_DIR}/thirdparty/fmt-5.3.0/include)
 endif()
 
 add_subdirectory(src)
 add_subdirectory(include)
+add_subdirectory(share)
 
 option(ENABLE_SAMPLES "Enable samples in the sample directory" ON)
 if(ENABLE_SAMPLES)
@@ -1320,14 +1351,18 @@ if(ENABLE_EXT)
     foreach(dir ${ADDITIONAL_EXT_DIRECTORIES})
       if(EXISTS ${dir}/CMakeLists.txt)
 	add_subdirectory(${dir})
+      else()
+	file(GLOB subdirs "${dir}/*")
+	list(SORT subdirs)
+	foreach(subdir ${subdirs})
+	  if(EXISTS ${subdir}/CMakeLists.txt)
+	    add_subdirectory(${subdir})
+	  endif()
+	endforeach()
       endif()
     endforeach()
   endif()
 endif()
-
-
-
-configure_file(Doxyfile.in ${CMAKE_CURRENT_SOURCE_DIR}/Doxyfile @ONLY)
 
 if(EXISTS ${PROJECT_SOURCE_DIR}/test)
   if(EXISTS ${PROJECT_SOURCE_DIR}/test/CMakeLists.txt)
@@ -1335,99 +1370,45 @@ if(EXISTS ${PROJECT_SOURCE_DIR}/test)
   endif()
 endif()
 
-
-# installing share directory files
-# This must be written not in share directory but in this top CMakeLists.txt
-# to prevent the share directory from being created in the binary directory
-
-set(subdirs model project motion script default)
-foreach(subdir ${subdirs})
-  get_filename_component(path share/${subdir} ABSOLUTE)
-  if((EXISTS ${path}) AND (IS_DIRECTORY ${path}))
-    install(DIRECTORY share/${subdir} DESTINATION ${CNOID_SHARE_SUBDIR})
-  endif()
-endforeach()
-
-
-
 # CPack
 include(InstallRequiredSystemLibraries)
 
 # InstallRequiredSystemLibraries does not properly support MSVS 14 yet, so do it manually.  (CMake3.5)
 if(INSTALL_RUNTIME_DEPENDENCIES)
-unset(CMAKE_INSTALL_SYSTEM_RUNTIME_LIBS_DEBUG)
-unset(CMAKE_INSTALL_SYSTEM_RUNTIME_LIBS_RELEASE)
-if(DEFINED MSVC_VERSION AND NOT MSVC_VERSION LESS 1900)
+  unset(CMAKE_INSTALL_SYSTEM_RUNTIME_LIBS_DEBUG)
+  unset(CMAKE_INSTALL_SYSTEM_RUNTIME_LIBS_RELEASE)
+  if(DEFINED MSVC_VERSION AND NOT MSVC_VERSION LESS 1900)
     # Internal: Architecture-appropriate library directory names.
     if("${CMAKE_VS_PLATFORM_NAME}" STREQUAL "ARM")
-        set(_winsdk_arch8 arm) # what the WDK for Win8+ calls this architecture
+      set(_winsdk_arch8 arm) # what the WDK for Win8+ calls this architecture
     else()
-        if(CMAKE_SIZEOF_VOID_P MATCHES "8")
-            set(_winsdk_arch8 x64) # what the WDK for Win8+ calls this architecture
-        else()
-            set(_winsdk_arch8 x86) # what the WDK for Win8+ calls this architecture
-        endif()
+      if(CMAKE_SIZEOF_VOID_P MATCHES "8")
+        set(_winsdk_arch8 x64) # what the WDK for Win8+ calls this architecture
+      else()
+        set(_winsdk_arch8 x86) # what the WDK for Win8+ calls this architecture
+      endif()
     endif()
 
     # The CRT is distributed with MSVS.
     get_filename_component(MSVS_DIR
-        "[HKEY_LOCAL_MACHINE\\SOFTWARE\\Microsoft\\VisualStudio\\14.0;ShellFolder]" ABSOLUTE)
+      "[HKEY_LOCAL_MACHINE\\SOFTWARE\\Microsoft\\VisualStudio\\14.0;ShellFolder]" ABSOLUTE)
 
     # As of MSVC 19 the CRT depends on the 'univeral' CRT (which is part of Windows development kit 10 and above).
     get_filename_component(WINDOWS_KIT_DIR
-        "[HKEY_LOCAL_MACHINE\\SOFTWARE\\Microsoft\\Windows Kits\\Installed Roots;KitsRoot10]" ABSOLUTE)
-
+      "[HKEY_LOCAL_MACHINE\\SOFTWARE\\Microsoft\\Windows Kits\\Installed Roots;KitsRoot10]" ABSOLUTE)
+    
     file(GLOB CMAKE_INSTALL_SYSTEM_RUNTIME_LIBS_DEBUG
-        "${MSVS_DIR}/VC/redist/debug_nonredist/${_winsdk_arch8}/Microsoft.VC140.DebugCRT/*.dll"
-        "${WINDOWS_KIT_DIR}/Redist/ucrt/DLLs/${_winsdk_arch8}/api-ms-win-*.dll"
-        "${WINDOWS_KIT_DIR}/bin/${_winsdk_arch8}/ucrt/*.dll"
-    )
+      "${MSVS_DIR}/VC/redist/debug_nonredist/${_winsdk_arch8}/Microsoft.VC140.DebugCRT/*.dll"
+      "${WINDOWS_KIT_DIR}/Redist/ucrt/DLLs/${_winsdk_arch8}/api-ms-win-*.dll"
+      "${WINDOWS_KIT_DIR}/bin/${_winsdk_arch8}/ucrt/*.dll"
+      )
     file(GLOB CMAKE_INSTALL_SYSTEM_RUNTIME_LIBS_RELEASE
-        "${MSVS_DIR}/VC/redist/${_winsdk_arch8}/Microsoft.VC140.CRT/*.dll"
-        "${WINDOWS_KIT_DIR}/Redist/ucrt/DLLs/${_winsdk_arch8}/*.dll"
-    )
+      "${MSVS_DIR}/VC/redist/${_winsdk_arch8}/Microsoft.VC140.CRT/*.dll"
+      "${WINDOWS_KIT_DIR}/Redist/ucrt/DLLs/${_winsdk_arch8}/*.dll"
+      )
 
     install(PROGRAMS ${CMAKE_INSTALL_SYSTEM_RUNTIME_LIBS_RELEASE} DESTINATION bin )
-endif()
-endif()
-
-set(CPACK_PACKAGE_DESCRIPTION_SUMMARY "Choreonoid")
-set(CPACK_PACKAGE_VENDOR "Shin'ichiro Nakaoka, AIST")
-#set(CPACK_PACKAGE_DESCRIPTION_FILE "${CMAKE_CURRENT_SOURCE_DIR}/ReadMe.txt")
-set(CPACK_RESOURCE_FILE_LICENSE "${CMAKE_CURRENT_SOURCE_DIR}/LICENSE")
-set(CPACK_PACKAGE_VERSION_MAJOR ${CNOID_MAJOR_VERSION})
-set(CPACK_PACKAGE_VERSION_MINOR ${CNOID_MINOR_VERSION})
-set(CPACK_PACKAGE_VERSION_PATCH ${CNOID_PATCH_VERSION})
-set(CPACK_PACKAGE_INSTALL_DIRECTORY "Choreonoid ${CNOID_VERSION}")
-set(CPACK_PACKAGE_INSTALL_REGISTORY_KEY "Choreonoid ${CNOID_VERSION}")
-
-set(CPACK_GENERATOR NSIS)
-if(WIN32)
-  set(CPACK_GENERATOR NSIS)
-  set(CPACK_PACKAGE_ICON "${CMAKE_SOURCE_DIR}\\\\src\\\\Choreonoid\\\\icon\\\\choreonoid.ico")
-  set(CPACK_NSIS_INSTALLED_ICON_NAME "bin\\\\choreonoid.exe")
-  set(CPACK_NSIS_DISPLAY_NAME "Choreonoid ${CNOID_VERSION}")
-  set(CPACK_NSIS_CONTACT "choreonoid@m.aist.go.jp")
-  set(CPACK_NSIS_MODIFY_PATH ON)
-  set(CPACK_PACKAGE_EXECUTABLES "choreonoid;Choreonoid")
-  set(CPACK_CREATE_DESKTOP_LINKS choreonoid)
-  set(CPACK_NSIS_URL_INFO_ABOUT "http://choreonoid.org")
-  
-  set(CPACK_NSIS_EXTRA_INSTALL_COMMANDS "!include \\\"FileAssociation.nsh\\\"\n\\\${registerExtension} \\\"\$INSTDIR\\\\bin\\\\choreonoid.exe\\\" \\\".cnoid\\\" \\\"ChoreonoidProject\\\" \nSystem::Call 'shell32.dll::SHChangeNotify(i, i, i, i) v (0x08000000, 0, 0, 0)'")
-  set(CPACK_NSIS_EXTRA_UNINSTALL_COMMANDS "\\\${unregisterExtension} \\\".cnoid\\\" \\\"ChoreonoidProject\\\" \nSystem::Call 'shell32.dll::SHChangeNotify(i, i, i, i) v (0x08000000, 0, 0, 0)'")
-
-elseif(UNIX)
-  set(CPACK_GENERATOR DEB)
-  set(CPACK_PACKAGE_FILE_NAME "choreonoid_${CNOID_FULL_VERSION}_i386")
-  set(CPACK_DEBIAN_PACKAGE_DEPENDS "libc6, libgcc1, libstdc++6, libpng12-0, libjpeg62, libyaml-0-2, zlib1g, libboost-filesystem1.42.0, libboost-date-time1.42.0, libboost-program-options1.42.0, libboost-python1.42.0, libboost-system1.42.0, libqtcore4, libqtgui4, libqt4-test, libqt4-opengl")
-  if(INSTALL_SDK)
-    set(CPACK_DEBIAN_PACKAGE_DEPENDS "${CPACK_DEBIAN_PACKAGE_DEPENDS}, libstdc++-dev, libboost-dev, libboost-program-options-dev, libboost-python-dev, libqt4-dev, libqt4-opengl-dev")
   endif()
-  set(CPACK_DEBIAN_PACKAGE_MAINTAINER "Shin'ichiro Nakaoka")
 endif()
-
-#set(CPACK_INCLUDE_TOPLEVEL_DIRECTORY 1)
-
-include(CPack)
 
 add_subdirectory(misc)

@@ -8,13 +8,13 @@
 #include "ValueTree.h"
 #include "YAMLWriter.h"
 #include "GeneralSeqReader.h"
-#include <boost/format.hpp>
+#include <fmt/format.h>
 #include <fstream>
 #include "gettext.h"
 
 using namespace std;
 using namespace cnoid;
-using boost::format;
+using fmt::format;
 
 
 Vector3Seq::Vector3Seq(int nFrames)
@@ -31,7 +31,7 @@ Vector3Seq::Vector3Seq(const Vector3Seq& org)
 }
 
 
-AbstractSeqPtr Vector3Seq::cloneSeq() const
+std::shared_ptr<AbstractSeq> Vector3Seq::cloneSeq() const
 {
     return std::make_shared<Vector3Seq>(*this);
 }
@@ -64,33 +64,26 @@ bool Vector3Seq::doReadSeq(const Mapping* archive, std::ostream& os)
 }
 
 
-bool Vector3Seq::doWriteSeq(YAMLWriter& writer)
+bool Vector3Seq::doWriteSeq(YAMLWriter& writer, std::function<void()> additionalPartCallback)
 {
-    return writeVector3SeqHeaders(writer) && writeVector3SeqFrames(writer);
-}
-
-
-bool Vector3Seq::writeVector3SeqHeaders(YAMLWriter& writer)
-{
-    return writeSeqHeaders(writer);
-}
-
-
-bool Vector3Seq::writeVector3SeqFrames(YAMLWriter& writer)
-{
-    writer.putKey("frames");
-    writer.startListing();
-    const int n = numFrames();
-    for(int i=0; i < n; ++i){
-        writer.startFlowStyleListing();
-        const Vector3& v = (*this)[i];
-        for(int j=0; j < 3; ++j){
-            writer.putScalar(v[j]);
-        }
-        writer.endListing();
-    }
-    writer.endListing();
-    return true;
+    return BaseSeqType::doWriteSeq(
+        writer,
+        [&](){
+            if(additionalPartCallback) additionalPartCallback();
+            
+            writer.putKey("frames");
+            writer.startListing();
+            const int n = numFrames();
+            for(int i=0; i < n; ++i){
+                writer.startFlowStyleListing();
+                const Vector3& v = (*this)[i];
+                for(int j=0; j < 3; ++j){
+                    writer.putScalar(v[j]);
+                }
+                writer.endListing();
+            }
+            writer.endListing();
+        });
 }
 
 
@@ -103,7 +96,7 @@ bool Vector3Seq::loadPlainFormat(const std::string& filename, std::ostream& os)
     }
 
     if(loader.numParts() < 3){
-        os << format(_("\"%1%\" does not have 3 columns for 3d vector elements.")) % filename << endl;
+        os << format(_("\"{}\" does not have 3 columns for 3d vector elements."), filename) << endl;
         return false;
     }
   
@@ -127,18 +120,18 @@ bool Vector3Seq::saveAsPlainFormat(const std::string& filename, std::ostream& os
     file.setf(ios::fixed);
 
     if(!file){
-        os << format(_("\"%1%\" cannot be opened.")) % filename << endl;
+        os << format(_("\"{}\" cannot be opened."), filename) << endl;
         return false;
     }
 
-    format f("%1$.4f %2$.6f %3$.6f %4$.6f\n");
+    const string f("{0:.4f} {1:.6f} {2:.6f} {3:.6f}\n");
 
     const int n = numFrames();
     const double r = frameRate();
 
     for(int i=0; i < n; ++i){
         const Vector3& v = (*this)[i];
-        file << (f % (i / r) % v.x() % v.y() % v.z());
+        file << format(f, (i / r), v.x(), v.y(), v.z());
     }
     
     return true;

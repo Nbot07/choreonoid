@@ -7,11 +7,14 @@
 #include <cnoid/BodyItem>
 #include <cnoid/ItemManager>
 #include <cnoid/MessageView>
+#include <fmt/format.h>
 #include "gettext.h"
+
+#include "LoggerUtil.h"
 
 using namespace std;
 using namespace cnoid;
-using boost::format;
+using fmt::format;
 
 namespace cnoid {
 
@@ -19,23 +22,27 @@ class BodyIoRTCItemImpl : public ControllerIO
 {
 public:
     BodyIoRTCItem* self;
-    BodyItem* bodyItem = 0;
-    BodyIoRTC* bodyIoRTC = 0;
+    BodyItem* bodyItem;
+    BodyIoRTC* bodyIoRTC;
+    ControllerIO* io;
     MessageView* mv;
-    
+
     BodyIoRTCItemImpl(BodyIoRTCItem* self);
     BodyIoRTCItemImpl(BodyIoRTCItem* self, const BodyIoRTCItemImpl& org);
     void setBodyItem(BodyItem* newBodyItem, bool forceReset);
     bool createBodyIoRTC();
 
     // Virtual functions of ControllerIO
-    virtual Body* body();
-    virtual std::string optionString() const;
-    virtual std::ostream& os() const;
+    virtual Body* body() override;
+    virtual std::string optionString() const override;
+    virtual std::ostream& os() const override;
+    virtual double timeStep() const override;
+    virtual double currentTime() const override;
+    virtual bool isNoDelayMode() const override;
+    virtual bool setNoDelayMode(bool on) override;
 };
 
 }
-
 
 void BodyIoRTCItem::initialize(ExtensionManager* ext)
 {
@@ -51,7 +58,7 @@ void BodyIoRTCItem::initialize(ExtensionManager* ext)
 BodyIoRTCItem::BodyIoRTCItem()
 {
     impl = new BodyIoRTCItemImpl(this);
-    useOnlyChoreonoidExecutionContext();
+    useOnlySimulationExecutionContext();
 }
 
 
@@ -59,7 +66,9 @@ BodyIoRTCItemImpl::BodyIoRTCItemImpl(BodyIoRTCItem* self)
     : self(self),
       mv(MessageView::instance())
 {
-
+    bodyItem = nullptr;
+    bodyIoRTC = nullptr;
+    io = nullptr;
 }
 
 
@@ -67,7 +76,7 @@ BodyIoRTCItem::BodyIoRTCItem(const BodyIoRTCItem& org)
     : ControllerRTCItem(org)
 {
     impl = new BodyIoRTCItemImpl(this, *org.impl);
-    useOnlyChoreonoidExecutionContext();
+    useOnlySimulationExecutionContext();
 }
 
 
@@ -90,9 +99,25 @@ Item* BodyIoRTCItem::doDuplicate() const
 }
 
 
+void BodyIoRTCItem::onConnectedToRoot()
+{
+    /**
+       Do nothing here to cancel the implementation of ControllerRTCItem.
+       The RTC is created when the onPositionChanged function is called.
+    */
+}
+
+
 void BodyIoRTCItem::onPositionChanged()
 {
     impl->setBodyItem(findOwnerItem<BodyItem>(), false);
+}
+
+
+void BodyIoRTCItem::onOptionsChanged()
+{
+    // Recreate RTC with new options
+    impl->createBodyIoRTC();
 }
 
 
@@ -113,7 +138,9 @@ std::string BodyIoRTCItem::getDefaultRTCInstanceName() const
 
 Body* BodyIoRTCItemImpl::body()
 {
-    if(bodyItem){
+    if(io){
+        return io->body();
+    } else if(bodyItem){
         return bodyItem->body();
     }
     return nullptr;
@@ -122,6 +149,9 @@ Body* BodyIoRTCItemImpl::body()
 
 std::string BodyIoRTCItemImpl::optionString() const
 {
+    if(io){
+        return getIntegratedOptionString(io->optionString(), self->optionString());
+    }
     return self->optionString();
 }
 
@@ -132,6 +162,30 @@ std::ostream& BodyIoRTCItemImpl::os() const
 }
 
 
+double BodyIoRTCItemImpl::timeStep() const
+{
+    return io ? io->timeStep() : 0.0;
+}
+        
+
+double BodyIoRTCItemImpl::currentTime() const
+{
+    return io ? io->currentTime() : 0.0;
+}
+        
+
+bool BodyIoRTCItemImpl::isNoDelayMode() const
+{
+    return self->isNoDelayMode();
+}
+        
+
+bool BodyIoRTCItemImpl::setNoDelayMode(bool on)
+{
+    return self->setNoDelayMode(on);
+}
+        
+
 bool BodyIoRTCItem::createRTC()
 {
     return impl->createBodyIoRTC();
@@ -140,18 +194,20 @@ bool BodyIoRTCItem::createRTC()
 
 bool BodyIoRTCItemImpl::createBodyIoRTC()
 {
+  DDEBUG("BodyIoRTCItemImpl::createBodyIoRTC");
     if(!bodyItem){
         self->deleteRTC(true);
         return false;
     }
     
-    if(self->createRTCmain()){
+    if(self->createRTCmain(true)){
 
         bodyIoRTC = dynamic_cast<BodyIoRTC*>(self->rtc());
         if(!bodyIoRTC){
-            mv->putln(MessageView::ERROR,
-                      format(_("RTC \"%1%\" of %2% cannot be used as a BodyIoRTC because it is not derived from it."))
-                      % self->rtcModuleName() % self->name());
+            mv->putln(
+                format(_("RTC \"{0}\" of {1} cannot be used as a BodyIoRTC because it is not derived from it."),
+                       self->rtcModuleName(), self->name()),
+                MessageView::ERROR);
             self->deleteRTC(false);
             return false;
         }
@@ -163,14 +219,15 @@ bool BodyIoRTCItemImpl::createBodyIoRTC()
         }
 
         if(!initialized){
-            mv->putln(MessageView::ERROR,
-                      format(_("RTC \"%1%\" of %2% failed to initialize."))
-                      % self->rtcModuleName() % self->name());
+            mv->putln(
+                format(_("RTC \"{0}\" of {1} failed to initialize."),
+                       self->rtcModuleName(), self->name()),
+                MessageView::ERROR);
             self->deleteRTC(true);
             return false;
         }
         
-        mv->putln(fmt(_("BodyIoRTC \"%1%\" has been created.")) % self->rtcInstanceName());
+        mv->putln(format(_("BodyIoRTC \"{}\" has been created."), self->rtcInstanceName()));
         
         return true;
     }
@@ -189,7 +246,8 @@ void BodyIoRTCItem::deleteRTC(bool waitToBeDeleted)
 bool BodyIoRTCItem::initialize(ControllerIO* io)
 {
     if(impl->bodyIoRTC){
-        return impl->bodyIoRTC->initializeSimulation(io);
+        impl->io = io;
+        return impl->bodyIoRTC->initializeSimulation(impl);
     }
     return false;
 }
@@ -225,4 +283,5 @@ void BodyIoRTCItem::stop()
 {
     impl->bodyIoRTC->stopSimulation();
     ControllerRTCItem::stop();
+    impl->io = nullptr;
 }

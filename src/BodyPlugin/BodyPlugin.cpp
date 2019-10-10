@@ -4,27 +4,35 @@
 
 #include "WorldItem.h"
 #include "BodyItem.h"
-#include "BodyMotionItem.h"
-#include "MultiDeviceStateSeqItem.h"
-#include "ZMPSeqItem.h"
+#include "CoordinateFrameSetPairItem.h"
+#include "CoordinateFrameSetItem.h"
 #include "SimulatorItem.h"
 #include "AISTSimulatorItem.h"
+#include "KinematicSimulatorItem.h"
 #include "SimpleControllerItem.h"
 #include "BodyMotionControllerItem.h"
 #include "GLVisionSimulatorItem.h"
+#include "BodyMotionItem.h"
+#include "ZMPSeqItem.h"
+#include "MultiDeviceStateSeqItem.h"
 #include "WorldLogFileItem.h"
+#include "IoConnectionMapItem.h"
 #include "SensorVisualizerItem.h"
 #include "BodyTrackingCameraItem.h"
+#include "BodyMarkerItem.h"
 #include "KinematicFaultChecker.h"
 #include "SplineFilterDialog.h"
 #include "BodyBar.h"
 #include "LeggedBodyBar.h"
 #include "LinkSelectionView.h"
 #include "LinkPropertyView.h"
+#include "LinkPositionView.h"
 #include "BodyLinkView.h"
-#include "JointSliderView.h"
+#include "JointDisplacementView.h"
+#include "CoordinateFrameSetView.h"
 #include "JointStateView.h"
 #include "BodyStateView.h"
+#include "IoConnectionView.h"
 #include "JointGraphView.h"
 #include "LinkGraphView.h"
 #include "KinematicsBar.h"
@@ -40,6 +48,7 @@
 #include <cnoid/ItemManager>
 #include <cnoid/MessageView>
 #include <cnoid/CnoidBody>
+#include <fmt/format.h>
 #include "gettext.h"
 
 using namespace cnoid;
@@ -58,7 +67,7 @@ public:
     virtual bool initialize()
     {
 
-#if QT_VERSION >= QT_VERSION_CHECK(5, 0, 0) && CNOID_ENABLE_GETTEXT
+#ifdef CNOID_ENABLE_GETTEXT
         setCnoidBodyTextDomainCodeset();
 #endif
 
@@ -67,15 +76,20 @@ public:
 
         WorldItem::initializeClass(this);
         BodyItem::initializeClass(this);
-        BodyMotionItem::initializeClass(this);
+        CoordinateFrameSetPairItem::initializeClass(this);
+        CoordinateFrameSetItem::initializeClass(this);
         SimulatorItem::initializeClass(this);
         AISTSimulatorItem::initializeClass(this);
+        KinematicSimulatorItem::initializeClass(this);
         SimpleControllerItem::initializeClass(this);
         BodyMotionControllerItem::initializeClass(this);
         GLVisionSimulatorItem::initializeClass(this);
+        BodyMotionItem::initializeClass(this);
         WorldLogFileItem::initializeClass(this);
+        IoConnectionMapItem::initializeClass(this);
         SensorVisualizerItem::initializeClass(this);
         BodyTrackingCameraItem::initializeClass(this);
+        BodyMarkerItem::initializeClass(this);
 
         BodyMotionEngine::initialize(this);
         CollisionSeqEngine::initialize(this);
@@ -95,10 +109,13 @@ public:
 
         LinkSelectionView::initializeClass(this);
         LinkPropertyView::initializeClass(this);
+        LinkPositionView::initializeClass(this);
         BodyLinkView::initializeClass(this);
-        JointSliderView::initializeClass(this);
+        JointDisplacementView::initializeClass(this);
+        CoordinateFrameSetView::initializeClass(this);
         JointStateView::initializeClass(this);
         BodyStateView::initializeClass(this);
+        IoConnectionView::initializeClass(this);
         JointGraphView::initializeClass(this);
         LinkGraphView::initializeClass(this);
 
@@ -114,18 +131,16 @@ public:
     virtual const char* description() const override
     {
         static std::string text =
-            str(fmt(_("Body Plugin Version %1%\n")) % CNOID_FULL_VERSION_STRING) +
+            fmt::format("Body Plugin Version {}\n", CNOID_FULL_VERSION_STRING) +
             "\n" +
-            _("This plugin has been developed by Shin'ichiro Nakaoka and Choreonoid Development Team, AIST, "
-              "and is distributed as a part of the Choreonoid package.\n"
-              "\n") +
-            LGPLtext() +
+            "Copyrigh (c) 2018 Shin'ichiro Nakaoka and Choreonoid Development Team, AIST.\n"
+            "\n" +
+            MITLicenseText() +
             "\n" +
             _("The Collision deteciton module used in this plugin is implemented using "
               "the OPCODE library (http://www.codercorner.com/Opcode.htm).\n");
-        
+
         return text.c_str();
-        
     }
 };
 

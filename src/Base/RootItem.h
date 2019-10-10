@@ -6,7 +6,6 @@
 #define CNOID_BASE_ROOT_ITEM_H
 
 #include "Item.h"
-#include "ItemList.h"
 #include "exportdecl.h"
 
 namespace cnoid {
@@ -23,7 +22,7 @@ class CNOID_EXPORT RootItem : public Item
 public:
     static void initializeClass(ExtensionManager* ext);
     static RootItem* instance();
-    static RootItem* mainInstance(); // obsolete
+    static RootItem* mainInstance(); // deprecated
 
     RootItem();
     RootItem(const RootItem& org);

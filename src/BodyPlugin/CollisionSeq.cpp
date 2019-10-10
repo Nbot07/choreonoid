@@ -150,13 +150,13 @@ void CollisionSeq::readCollisionData(int nFrames, const Listing& values)
 }
 
 
-void CollisionSeq::writeCollsionData(YAMLWriter& writer, const CollisionLinkPairListPtr ptr)
+void CollisionSeq::writeCollsionData(YAMLWriter& writer, std::shared_ptr<const CollisionLinkPairList> ptr)
 {
     writer.startMapping();
     writer.putKey("LinkPairs");
 
     writer.startListing();
-    for(CollisionLinkPairList::iterator it=ptr->begin(); it!=ptr->end(); it++){
+    for(auto it = ptr->begin(); it != ptr->end(); ++it){
         CollisionLinkPairPtr linkPair = *it;
         writer.startMapping();
         writer.putKeyValue("body0",linkPair->body[0]->name());
@@ -189,22 +189,22 @@ void CollisionSeq::writeCollsionData(YAMLWriter& writer, const CollisionLinkPair
 }
 
 
-bool CollisionSeq::doWriteSeq(YAMLWriter& writer)
+bool CollisionSeq::doWriteSeq(YAMLWriter& writer, std::function<void()> additionalPartCallback)
 {
-    if(!writeSeqHeaders(writer)){
-        return false;
-    }
+    return BaseSeqType::doWriteSeq(
+        writer,
+        [&](){
+            writer.putKeyValue("format", "PxPyPzNxNyNzD");
 
-    writer.putKeyValue("format", "PxPyPzNxNyNzD");
-
-    writer.putKey("frames");
-    writer.startListing();
-    
-    const int n = numFrames();
-    for(int i=0; i < n; ++i){
-        Frame f = frame(i);
-        writeCollsionData(writer, f[0]);
-    }
-    writer.endListing();
-    return true;
+            if(additionalPartCallback) additionalPartCallback();
+            
+            writer.putKey("frames");
+            writer.startListing();
+            const int n = numFrames();
+            for(int i=0; i < n; ++i){
+                Frame f = frame(i);
+                writeCollsionData(writer, f[0]);
+            }
+            writer.endListing();
+        });
 }

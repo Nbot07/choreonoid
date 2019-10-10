@@ -8,41 +8,32 @@
 #include <cnoid/SceneLights>
 #include <cnoid/MeshGenerator>
 #include <cnoid/PolygonMeshTriangulator>
-#include <cnoid/MeshNormalGenerator>
+#include <cnoid/MeshFilter>
 #include <cnoid/SceneLoader>
 #include <cnoid/EigenArchive>
+#include <cnoid/YAMLReader>
 #include <cnoid/FileUtil>
 #include <cnoid/NullOut>
 #include <cnoid/Exception>
 #include <cnoid/ImageIO>
 #include <cnoid/Config>
-#include <boost/format.hpp>
 #include <unordered_map>
+#include <fmt/format.h>
 #include <mutex>
-
-#ifdef CNOID_USE_BOOST_REGEX
-#include <boost/regex.hpp>
-using boost::regex;
-using boost::smatch;
-using boost::regex_match;
-#else
 #include <regex>
-#endif
-
 #include "gettext.h"
 
 using namespace std;
 using namespace cnoid;
-namespace filesystem = boost::filesystem;
-using boost::format;
+using fmt::format;
 
 namespace {
 
-typedef SgNode* (YAMLSceneReaderImpl::*NodeFunction)(Mapping& node);
+typedef SgNode* (YAMLSceneReaderImpl::*NodeFunction)(Mapping& info);
 typedef unordered_map<string, NodeFunction> NodeFunctionMap;
 NodeFunctionMap nodeFunctionMap;
 
-struct NodeInfo
+struct SceneNodeInfo
 {
     SgGroupPtr parent;
     SgNodePtr node;
@@ -50,14 +41,17 @@ struct NodeInfo
     bool isScaled;
 };
 
-typedef unordered_map<string, NodeInfo> NodeMap;
+typedef unordered_map<string, SceneNodeInfo> SceneNodeMap;
     
 struct ResourceInfo : public Referenced
 {
-    SgNodePtr rootNode;
-    unique_ptr<NodeMap> nodeMap;
+    SgNodePtr scene;
+    unique_ptr<SceneNodeMap> sceneNodeMap;
+    unique_ptr<YAMLReader> yamlReader;
+    string directory;
 };
 typedef ref_ptr<ResourceInfo> ResourceInfoPtr;
+
 
 unordered_map<string, YAMLSceneReader::UriSchemeHandler> uriSchemeHandlerMap;
 std::mutex uriSchemeHandlerMutex;
@@ -74,6 +68,8 @@ public:
     ostream* os_;
     ostream& os() { return *os_; }
 
+    YAMLReader* mainYamlReader;
+
     // temporary variables for reading values
     double value;
     string symbol;
@@ -83,14 +79,15 @@ public:
     bool on;
     
     MeshGenerator meshGenerator;
+    int defaultDivisionNumber;
     PolygonMeshTriangulator polygonMeshTriangulator;
-    MeshNormalGenerator normalGenerator;
+    MeshFilter meshFilter;
     SgMaterialPtr defaultMaterial;
     ImageIO imageIO;
 
     map<string, ResourceInfoPtr> resourceInfoMap;
     SceneLoader sceneLoader;
-    filesystem::path baseDirectory;
+    stdx::filesystem::path baseDirectory;
     regex uriSchemeRegex;
     bool isUriSchemeRegexReady;
     typedef map<string, SgImagePtr> ImagePathToSgImageMap;
@@ -100,42 +97,50 @@ public:
     YAMLSceneReaderImpl(YAMLSceneReader* self);
     ~YAMLSceneReaderImpl();
 
-    bool readAngle(Mapping& node, const char* key, double& angle) { return self->readAngle(node, key, angle); }
-    
-    SgNode* readNode(Mapping& node, const string& type);
-    SgNode* readGroup(Mapping& node);
-    void readElements(Mapping& node, SgGroup* group);
+    bool readAngle(const Mapping& info, const char* key, double& angle) const{
+        return self->readAngle(info, key, angle);
+    }
+
+    SgNode* readNode(Mapping& info);
+    SgNode* readNode(Mapping& info, const string& type);
+    SgNode* readNodeNode(Mapping& info);
+    SgNode* readGroup(Mapping& info);
+    void readElements(Mapping& info, SgGroup* group);
     void readNodeList(ValueNode& elements, SgGroup* group);
-    SgNode* readTransform(Mapping& node);
-    SgNode* readTransformParameters(Mapping& node, SgNode* scene);
-    SgNode* readShape(Mapping& node);
-    SgMesh* readGeometry(Mapping& node);
-    SgMesh* readBox(Mapping& node);
-    SgMesh* readSphere(Mapping& node);
-    SgMesh* readCylinder(Mapping& node);
-    SgMesh* readCone(Mapping& node);
-    SgMesh* readCapsule(Mapping& node);
-    SgMesh* readExtrusion(Mapping& node);
-    SgMesh* readElevationGrid(Mapping& node);
-    SgMesh* readIndexedFaceSet(Mapping& node);
-    SgMesh* readResourceAsGeometry(Mapping& node);
-    void readAppearance(SgShape* shape, Mapping& node);
-    void readMaterial(SgShape* shape, Mapping& node);
-    void setDefaultMaterial(SgShape* shape);
-    void readTexture(SgShape* shape, Mapping& node);
-    void readTextureTransform(SgTexture* texture, Mapping& node);
-    void readLightCommon(Mapping& node, SgLight* light);
-    SgNode* readDirectionalLight(Mapping& node);
-    SgNode* readSpotLight(Mapping& node);
-    SgNode* readResource(Mapping& node);
-    SgNode* loadResource(const string& uri);
-    SgNode* loadResource(const string& uri, const string& nodeName);
-    void decoupleResourceNode(const string& uri, const string& nodeName);
-    ResourceInfo* getOrCreateResourceInfo(const string& uri);
-    filesystem::path findFileInPackage(const string& file);
-    void adjustNodeCoordinate(NodeInfo& info);
-    void makeNodeMap(ResourceInfo* info);
-    void makeNodeMapSub(const NodeInfo& nodeInfo, NodeMap& nodeMap);
+    SgNode* readTransform(Mapping& info);
+    SgNode* readTransformParameters(Mapping& info, SgNode* scene);
+    SgNode* readShape(Mapping& info);
+    SgMesh* readGeometry(Mapping& info);
+    void readDivisionNumber(Mapping& info);
+    SgMesh* readBox(Mapping& info);
+    SgMesh* readSphere(Mapping& info);
+    SgMesh* readCylinder(Mapping& info);
+    SgMesh* readCone(Mapping& info);
+    SgMesh* readCapsule(Mapping& info);
+    SgMesh* readExtrusion(Mapping& info);
+    SgMesh* readElevationGrid(Mapping& info);
+    SgMesh* readIndexedFaceSet(Mapping& info);
+    SgMesh* readResourceAsGeometry(Mapping& info);
+    void readAppearance(SgShape* shape, Mapping& info);
+    void readMaterial(SgShape* shape, Mapping& info);
+    void readTexture(SgShape* shape, Mapping& info);
+    void readTextureTransform(SgTexture* texture, Mapping& info);
+    void readLightCommon(Mapping& info, SgLight* light);
+    SgNode* readDirectionalLight(Mapping& info);
+    SgNode* readSpotLight(Mapping& info);
+    SgNode* readResource(Mapping& info);
+    YAMLSceneReader::Resource readResourceNode(Mapping& info);
+    YAMLSceneReader::Resource loadResource(Mapping& resourceNode, const string& uri);
+    void extractNamedYamlNodes(
+        Mapping& resourceNode, ResourceInfo* info, vector<string>& names, const string& uri, YAMLSceneReader::Resource& resource);
+    void extractNamedSceneNodes(
+        Mapping& resourceNode, ResourceInfo* info, vector<string>& names, const string& uri, YAMLSceneReader::Resource& resource);
+    void decoupleResourceNode(Mapping& resourceNode, const string& uri, const string& nodeName);
+    ResourceInfo* getOrCreateResourceInfo(Mapping& resourceNode, const string& uri);
+    stdx::filesystem::path findFileInPackage(const string& file);
+    void adjustNodeCoordinate(SceneNodeInfo& info);
+    void makeSceneNodeMap(ResourceInfo* info);
+    void makeSceneNodeMapSub(const SceneNodeInfo& nodeInfo, SceneNodeMap& nodeMap);
 };
 
 }
@@ -174,6 +179,7 @@ YAMLSceneReaderImpl::YAMLSceneReaderImpl(YAMLSceneReader* self)
     : self(self)
 {
     if(nodeFunctionMap.empty()){
+        nodeFunctionMap["Node"] = &YAMLSceneReaderImpl::readNodeNode;
         nodeFunctionMap["Group"] = &YAMLSceneReaderImpl::readGroup;
         nodeFunctionMap["Transform"] = &YAMLSceneReaderImpl::readTransform;
         nodeFunctionMap["Shape"] = &YAMLSceneReaderImpl::readShape;
@@ -182,6 +188,7 @@ YAMLSceneReaderImpl::YAMLSceneReaderImpl(YAMLSceneReader* self)
         nodeFunctionMap["Resource"] = &YAMLSceneReaderImpl::readResource;
     }
     os_ = &nullout();
+    defaultDivisionNumber = meshGenerator.defaultDivisionNumber();
     isUriSchemeRegexReady = false;
     imageIO.setUpsideDown(true);
 }
@@ -208,14 +215,14 @@ void YAMLSceneReader::setMessageSink(std::ostream& os)
 
 void YAMLSceneReader::setDefaultDivisionNumber(int n)
 {
-    impl->meshGenerator.setDivisionNumber(n);
+    impl->defaultDivisionNumber = n;
     impl->sceneLoader.setDefaultDivisionNumber(n);
 }
 
 
 int YAMLSceneReader::defaultDivisionNumber() const
 {
-    return impl->meshGenerator.divisionNumber();
+    return impl->defaultDivisionNumber;
 }
 
 
@@ -231,6 +238,12 @@ std::string YAMLSceneReader::baseDirectory()
 }
 
 
+void YAMLSceneReader::setYAMLReader(YAMLReader* reader)
+{
+    impl->mainYamlReader = reader;
+}
+
+
 void YAMLSceneReader::clear()
 {
     isDegreeMode_ = true;
@@ -240,9 +253,9 @@ void YAMLSceneReader::clear()
 }
 
 
-void YAMLSceneReader::readHeader(Mapping& node)
+void YAMLSceneReader::readHeader(Mapping& info)
 {
-    auto angleUnitNode = node.extract("angleUnit");
+    auto angleUnitNode = info.extract("angleUnit");
     if(angleUnitNode){
         string unit = angleUnitNode->toString();
         if(unit == "radian"){
@@ -262,9 +275,9 @@ void YAMLSceneReader::setAngleUnit(AngleUnit unit)
 }
 
 
-bool YAMLSceneReader::readAngle(Mapping& node, const char* key, double& angle)
+bool YAMLSceneReader::readAngle(const Mapping& info, const char* key, double& angle) const
 {
-    if(node.read(key, angle)){
+    if(info.read(key, angle)){
         angle = toRadian(angle);
         return true;
     }
@@ -272,7 +285,17 @@ bool YAMLSceneReader::readAngle(Mapping& node, const char* key, double& angle)
 }
 
 
-AngleAxis YAMLSceneReader::readAngleAxis(const Listing& rotation)
+bool YAMLSceneReader::readAngle(const Mapping& info, const char* key, float& angle) const
+{
+    if(info.read(key, angle)){
+        angle = toRadian(angle);
+        return true;
+    }
+    return false;
+}
+
+
+AngleAxis YAMLSceneReader::readAngleAxis(const Listing& rotation) const
 {
     Vector4 r;
     cnoid::read(rotation, r);
@@ -285,43 +308,97 @@ AngleAxis YAMLSceneReader::readAngleAxis(const Listing& rotation)
     return AngleAxis(toRadian(r[3]), axis);
 }
 
-        
-bool YAMLSceneReader::readRotation(Mapping& node, Matrix3& out_R, bool doExtract)
+
+bool YAMLSceneReader::readRotation(const ValueNode* info, Matrix3& out_R) const
 {
-    ValueNodePtr value;
-    if(doExtract){
-        value = node.extract("rotation");
-    } else {
-        value = node.find("rotation");
-    }
-    if(!value || !value->isValid()){
+    if(!info || !info->isValid()){
         return false;
     }
-    const Listing& rotations = *value->toListing();
+    const Listing& rotations = *info->toListing();
     if(!rotations.empty()){
-        if(rotations[0].isListing()){
+        if(!rotations[0].isListing()){
+            out_R = readAngleAxis(rotations);
+        } else {
             out_R = Matrix3::Identity();
             for(int i=0; i < rotations.size(); ++i){
                 out_R = out_R * readAngleAxis(*rotations[i].toListing());
             }
+        }
+    }
+    return true;
+}
+
+        
+bool YAMLSceneReader::readRotation(const Mapping& info, Matrix3& out_R) const
+{
+    return readRotation(info.find("rotation"), out_R);
+}
+
+
+bool YAMLSceneReader::readRotation(const Mapping& info, const char* key, Matrix3& out_R) const
+{
+    return readRotation(info.find(key), out_R);
+}
+
+
+bool YAMLSceneReader::extractRotation(Mapping& info, Matrix3& out_R) const
+{
+    ValueNodePtr value = info.extract("rotation");
+    return readRotation(value, out_R);
+}
+
+
+bool YAMLSceneReader::readTranslation(const ValueNode* info, Vector3& out_p) const
+{
+    if(!info || !info->isValid()){
+        return false;
+    }
+    const Listing& translations = *info->toListing();
+    if(!translations.empty()){
+        if(!translations[0].isListing()){
+            read(translations, out_p);
         } else {
-            out_R = readAngleAxis(rotations);
+            out_p.setZero();
+            Vector3 v;
+            for(int i=0; i < translations.size(); ++i){
+                if(readTranslation(&translations[i], v)){
+                    out_p += v;
+                }
+            }
         }
     }
     return true;
 }
 
 
-SgNode* YAMLSceneReader::readNode(Mapping& node)
+bool YAMLSceneReader::readTranslation(const Mapping& info, Vector3& out_p) const
 {
-    const string type = node["type"].toString();
-    return impl->readNode(node, type);
+    return readTranslation(info.find("translation"), out_p);
 }
 
 
-SgNode* YAMLSceneReader::readNode(Mapping& node, const std::string& type)
+bool YAMLSceneReader::readTranslation(const Mapping& info, const char* key, Vector3& out_p) const
 {
-    return impl->readNode(node, type);
+    return readTranslation(info.find(key), out_p);
+}
+
+
+bool YAMLSceneReader::extractTranslation(Mapping& info, Vector3& out_p) const
+{
+    ValueNodePtr value = info.extract("translation");
+    return readTranslation(value, out_p);
+}
+
+
+SgNode* YAMLSceneReader::readNode(Mapping& info)
+{
+    return info.isValid() ? impl->readNode(info) : nullptr;
+}
+
+
+SgNode* YAMLSceneReader::readNode(Mapping& info, const std::string& type)
+{
+    return info.isValid() ? impl->readNode(info, type) : nullptr;
 }
 
 
@@ -340,25 +417,36 @@ static SgNodePtr removeRedundantGroup(SgGroupPtr& group)
 }
 
 
-SgNode* YAMLSceneReader::readNodeList(ValueNode& node)
+SgNode* YAMLSceneReader::readNodeList(ValueNode& info)
 {
     SgGroupPtr group = new SgGroup;
-    impl->readNodeList(node, group);
+    impl->readNodeList(info, group);
     return removeRedundantGroup(group).retn();
 }    
 
 
-SgNode* YAMLSceneReaderImpl::readNode(Mapping& node, const string& type)
+SgNode* YAMLSceneReaderImpl::readNode(Mapping& info)
+{
+    const string type = info["type"].toString();
+    return readNode(info, type);
+}
+    
+
+SgNode* YAMLSceneReaderImpl::readNode(Mapping& info, const string& type)
 {
     NodeFunctionMap::iterator q = nodeFunctionMap.find(type);
     if(q == nodeFunctionMap.end()){
-        node.throwException(str(format(_("The node type \"%1%\" is not defined.")) % type));
+        if(info.get("isOptional", false)){
+            os() << format(_("Warning: the node type \"{}\" is not defined. Reading this node has been skipped."), type) << endl;
+            return nullptr;
+        }
+        info.throwException(format(_("The node type \"{}\" is not defined."), type));
     }
 
     NodeFunction funcToReadNode = q->second;
-    SgNodePtr scene = (this->*funcToReadNode)(node);
+    SgNodePtr scene = (this->*funcToReadNode)(info);
     if(scene){
-        if(node.read("name", symbol)){
+        if(info.read("name", symbol)){
             scene->setName(symbol);
         } else {
             // remove a nameless, redundant group node
@@ -371,17 +459,24 @@ SgNode* YAMLSceneReaderImpl::readNode(Mapping& node, const string& type)
 }
 
 
-SgNode* YAMLSceneReaderImpl::readGroup(Mapping& node)
+SgNode* YAMLSceneReaderImpl::readNodeNode(Mapping& info)
+{
+    SgNodePtr node = new SgNode;
+    return node.retn();
+}
+
+
+SgNode* YAMLSceneReaderImpl::readGroup(Mapping& info)
 {
     SgGroupPtr group = new SgGroup;
-    readElements(node, group);
+    readElements(info, group);
     return group.retn();
 }
 
 
-void YAMLSceneReaderImpl::readElements(Mapping& node, SgGroup* group)
+void YAMLSceneReaderImpl::readElements(Mapping& info, SgGroup* group)
 {
-    ValueNode& elements = *node.find("elements");
+    ValueNode& elements = *info.find("elements");
     if(elements.isValid()){
         readNodeList(elements, group);
     }
@@ -411,8 +506,8 @@ void YAMLSceneReaderImpl::readNodeList(ValueNode& elements, SgGroup* group)
                 string type2 = typeNode->toString();
                 if(type2 != type){
                     element.throwException(
-                        str(format(_("The node type \"%1%\" is different from the type \"%2%\" specified in the parent node"))
-                            % type2 % type));
+                        format(_("The node type \"{0}\" is different from the type \"{1}\" specified in the parent node"),
+                                type2, type));
                 }
             }
             SgNodePtr scene = readNode(element, type);
@@ -425,28 +520,28 @@ void YAMLSceneReaderImpl::readNodeList(ValueNode& elements, SgGroup* group)
 }
 
 
-SgNode* YAMLSceneReaderImpl::readTransform(Mapping& node)
+SgNode* YAMLSceneReaderImpl::readTransform(Mapping& info)
 {
     SgGroupPtr group;
 
     SgPosTransformPtr posTransform = new SgPosTransform;
-    if(read(node, "translation", v)){
+    if(self->readTranslation(info, v)){
         posTransform->setTranslation(v);
         group = posTransform;
-    }
+    }        
     Matrix3 R;
-    if(self->readRotation(node, R, false)){
+    if(self->readRotation(info, R)){
         posTransform->setRotation(R);
         if(!group){
             group = posTransform;
         }
     }
 
-    if(!read(node, "scale", v)){
+    if(!read(info, "scale", v)){
         if(!group){
             group = new SgGroup;
         }
-        readElements(node, group);
+        readElements(info, group);
 
     } else {
         SgScaleTransformPtr scale = new SgScaleTransform;
@@ -456,7 +551,7 @@ SgNode* YAMLSceneReaderImpl::readTransform(Mapping& node)
         } else {
             group = scale;
         }
-        readElements(node, scale);
+        readElements(info, scale);
     }
 
     // Necessary to prevent group from being deleted when exiting the function
@@ -466,12 +561,12 @@ SgNode* YAMLSceneReaderImpl::readTransform(Mapping& node)
 }
 
 
-SgNode* YAMLSceneReaderImpl::readTransformParameters(Mapping& node, SgNode* scene)
+SgNode* YAMLSceneReaderImpl::readTransformParameters(Mapping& info, SgNode* scene)
 {
     Matrix3 R;
-    bool isRotated = self->readRotation(node, R, false);
+    bool isRotated = self->readRotation(info, R);
     Vector3 p;
-    bool isTranslated = read(node, "translation", p);
+    bool isTranslated = self->readTranslation(info, p);
     if(isRotated || isTranslated){
         SgPosTransform* transform = new SgPosTransform;
         if(isRotated){
@@ -487,119 +582,134 @@ SgNode* YAMLSceneReaderImpl::readTransformParameters(Mapping& node, SgNode* scen
 }
 
 
-SgNode* YAMLSceneReaderImpl::readShape(Mapping& node)
+SgNode* YAMLSceneReaderImpl::readShape(Mapping& info)
 {
-    SgNode* scene = 0;
+    SgNode* scene = nullptr;
 
-    Mapping& geometry = *node.findMapping("geometry");
-    if(geometry.isValid()){
-        SgShapePtr shape = new SgShape;
-
-        Mapping& appearance = *node.findMapping("appearance");
-        if(appearance.isValid()){
-            readAppearance(shape, appearance);
-        } else {
-            setDefaultMaterial(shape);
-        }
-
+    SgShapePtr shape = new SgShape;
+    
+    Mapping& appearance = *info.findMapping("appearance");
+    if(appearance.isValid()){
+        readAppearance(shape, appearance);
         if(shape->texture()){
             generateTexCoord = true;
         }else{
             generateTexCoord = false;
         }
+    }
+
+    Mapping& geometry = *info.findMapping("geometry");
+    if(geometry.isValid()){
         shape->setMesh(readGeometry(geometry));
+    }
 
-        scene = readTransformParameters(node, shape);
+    scene = readTransformParameters(info, shape);
 
-        if(scene == shape){
-            return shape.retn();
-        }
+    if(scene == shape){
+        return shape.retn();
     }
 
     return scene;
 }
 
 
-SgMesh* YAMLSceneReaderImpl::readGeometry(Mapping& node)
+SgMesh* YAMLSceneReaderImpl::readGeometry(Mapping& info)
 {
     SgMesh* mesh = 0;
-    ValueNode& typeNode = node["type"];
+    ValueNode& typeNode = info["type"];
     string type = typeNode.toString();
     if(type == "Box"){
-        mesh = readBox(node);
+        mesh = readBox(info);
     } else if(type == "Sphere"){
-        mesh = readSphere(node);
+        mesh = readSphere(info);
     } else if(type == "Cylinder"){
-        mesh = readCylinder(node);
+        mesh = readCylinder(info);
     } else if(type == "Cone"){
-        mesh = readCone(node);
+        mesh = readCone(info);
     } else if(type == "Capsule"){
-        mesh = readCapsule(node);
+        mesh = readCapsule(info);
     } else if(type == "Extrusion"){
-        mesh = readExtrusion(node);
+        mesh = readExtrusion(info);
     } else if(type == "ElevationGrid"){
-        mesh = readElevationGrid(node);
+        mesh = readElevationGrid(info);
     } else if(type == "IndexedFaceSet"){
-        mesh = readIndexedFaceSet(node);
+        mesh = readIndexedFaceSet(info);
     } else if(type == "Resource"){
-        mesh = readResourceAsGeometry(node);
+        mesh = readResourceAsGeometry(info);
     } else {
         typeNode.throwException(
-            str(format(_("Unknown geometry \"%1%\"")) % type));
+            format(_("Unknown geometry \"{}\""), type));
     }
     return mesh;
 }
 
 
-SgMesh* YAMLSceneReaderImpl::readBox(Mapping& node)
+void YAMLSceneReaderImpl::readDivisionNumber(Mapping& info)
+{
+    meshGenerator.setDivisionNumber(info.get("divisionNumber", defaultDivisionNumber));
+}
+    
+
+SgMesh* YAMLSceneReaderImpl::readBox(Mapping& info)
 {
     Vector3 size;
-    if(!read(node, "size", size)){
+    if(!read(info, "size", size)){
         size.setOnes(1.0);
     }
     return meshGenerator.generateBox(size, generateTexCoord);
 }
 
 
-SgMesh* YAMLSceneReaderImpl::readSphere(Mapping& node)
+SgMesh* YAMLSceneReaderImpl::readSphere(Mapping& info)
 {
-    return meshGenerator.generateSphere(node.get("radius", 1.0), generateTexCoord);
+    readDivisionNumber(info);
+    return meshGenerator.generateSphere(info.get("radius", 1.0), generateTexCoord);
 }
 
 
-SgMesh* YAMLSceneReaderImpl::readCylinder(Mapping& node)
+SgMesh* YAMLSceneReaderImpl::readCylinder(Mapping& info)
 {
-    double radius = node.get("radius", 1.0);
-    double height = node.get("height", 1.0);
-    bool bottom = node.get("bottom", true);
-    bool top = node.get("top", true);
+    readDivisionNumber(info);
+    
+    double radius = info.get("radius", 1.0);
+    double height = info.get("height", 1.0);
+    bool bottom = info.get("bottom", true);
+    bool top = info.get("top", true);
+    
     return meshGenerator.generateCylinder(radius, height, bottom, top, true, generateTexCoord);
 
 }
 
 
-SgMesh* YAMLSceneReaderImpl::readCone(Mapping& node)
+SgMesh* YAMLSceneReaderImpl::readCone(Mapping& info)
 {
-    double radius = node.get("radius", 1.0);
-    double height = node.get("height", 1.0);
-    bool bottom = node.get("bottom", true);
+    readDivisionNumber(info);
+
+    double radius = 1.0;
+    if(!info.read("radius", radius)){
+        info.read("bottomRadius", radius); // for the compatibility with VRML97
+    }
+    double height = info.get("height", 1.0);
+    bool bottom = info.get("bottom", true);
     return meshGenerator.generateCone(radius, height, bottom, true, generateTexCoord);
 }
 
 
-SgMesh* YAMLSceneReaderImpl::readCapsule(Mapping& node)
+SgMesh* YAMLSceneReaderImpl::readCapsule(Mapping& info)
 {
-    double radius = node.get("radius", 1.0);
-    double height = node.get("height", 1.0);
+    readDivisionNumber(info);
+    
+    double radius = info.get("radius", 1.0);
+    double height = info.get("height", 1.0);
     return meshGenerator.generateCapsule(radius, height);
 }
 
 
-SgMesh* YAMLSceneReaderImpl::readExtrusion(Mapping& node)
+SgMesh* YAMLSceneReaderImpl::readExtrusion(Mapping& info)
 {
     MeshGenerator::Extrusion extrusion;
 
-    Listing& crossSectionNode = *node.findListing("crossSection");
+    Listing& crossSectionNode = *info.findListing("crossSection");
     if(crossSectionNode.isValid()){
         const int n = crossSectionNode.size() / 2;
         MeshGenerator::Vector2Array& crossSection = extrusion.crossSection;
@@ -612,7 +722,7 @@ SgMesh* YAMLSceneReaderImpl::readExtrusion(Mapping& node)
         }
     }
 
-    Listing& spineNode = *node.findListing("spine");
+    Listing& spineNode = *info.findListing("spine");
     if(spineNode.isValid()){
         const int n = spineNode.size() / 3;
         MeshGenerator::Vector3Array& spine = extrusion.spine;
@@ -625,7 +735,7 @@ SgMesh* YAMLSceneReaderImpl::readExtrusion(Mapping& node)
         }
     }
 
-    Listing& orientationNode = *node.findListing("orientation");
+    Listing& orientationNode = *info.findListing("orientation");
     if(orientationNode.isValid()){
         const int n = orientationNode.size() / 4;
         MeshGenerator::AngleAxisArray& orientation = extrusion.orientation;
@@ -633,14 +743,14 @@ SgMesh* YAMLSceneReaderImpl::readExtrusion(Mapping& node)
         for(int i=0; i < n; ++i){
             AngleAxis& aa = orientation[i];
             Vector3& axis = aa.axis();
-            for(int j=0; j < 4; ++j){
+            for(int j=0; j < 3; ++j){
                 axis[j] = orientationNode[i*4+j].toDouble();
             }
             aa.angle() = self->toRadian(orientationNode[i*4+3].toDouble());
         }
     }
     
-    Listing& scaleNode = *node.findListing("scale");
+    Listing& scaleNode = *info.findListing("scale");
     if(scaleNode.isValid()){
         const int n = scaleNode.size() / 2;
         MeshGenerator::Vector2Array& scale = extrusion.scale;
@@ -653,26 +763,30 @@ SgMesh* YAMLSceneReaderImpl::readExtrusion(Mapping& node)
         }
     }
 
-    self->readAngle(node, "creaseAngle", extrusion.creaseAngle);
-    node.read("beginCap", extrusion.beginCap);
-    node.read("endCap", extrusion.endCap);
+    self->readAngle(info, "creaseAngle", extrusion.creaseAngle);
+    info.read("beginCap", extrusion.beginCap);
+    info.read("endCap", extrusion.endCap);
 
-    return meshGenerator.generateExtrusion(extrusion, generateTexCoord);
+    SgMesh* mesh = meshGenerator.generateExtrusion(extrusion, generateTexCoord);
+
+    mesh->setSolid(info.get("solid", mesh->isSolid()));
+    
+    return mesh;
 }
 
 
-SgMesh* YAMLSceneReaderImpl::readElevationGrid(Mapping& node)
+SgMesh* YAMLSceneReaderImpl::readElevationGrid(Mapping& info)
 {
     MeshGenerator::ElevationGrid grid;
 
-    node.read("xDimension", grid.xDimension);
-    node.read("zDimension", grid.zDimension);
-    node.read("xSpacing", grid.xSpacing);
-    node.read("zSpacing", grid.zSpacing);
-    node.read("ccw", grid.ccw);
-    self->readAngle(node, "creaseAngle", grid.creaseAngle);
+    info.read("xDimension", grid.xDimension);
+    info.read("zDimension", grid.zDimension);
+    info.read("xSpacing", grid.xSpacing);
+    info.read("zSpacing", grid.zSpacing);
+    info.read("ccw", grid.ccw);
+    self->readAngle(info, "creaseAngle", grid.creaseAngle);
 
-    Listing& heightNode = *node.findListing("height");
+    Listing& heightNode = *info.findListing("height");
     if(heightNode.isValid()){
         for(int i=0; i < heightNode.size(); i++){
             grid.height.push_back(heightNode[i].toDouble());
@@ -680,7 +794,7 @@ SgMesh* YAMLSceneReaderImpl::readElevationGrid(Mapping& node)
     }
 
     SgTexCoordArray* texCoord = 0;
-    Listing& texCoordNode = *node.findListing("texCoord");
+    Listing& texCoordNode = *info.findListing("texCoord");
     if(texCoordNode.isValid()){
         const int size = texCoordNode.size() / 2;
         texCoord = new SgTexCoordArray();
@@ -694,21 +808,23 @@ SgMesh* YAMLSceneReaderImpl::readElevationGrid(Mapping& node)
         generateTexCoord = false;
     }
 
-    SgMesh* mesh= meshGenerator.generateElevationGrid(grid, generateTexCoord);
+    SgMesh* mesh = meshGenerator.generateElevationGrid(grid, generateTexCoord);
     if(texCoord){
         mesh->setTexCoords(texCoord);
         mesh->texCoordIndices() = mesh->triangleVertices();
     }
 
+    mesh->setSolid(info.get("solid", mesh->isSolid()));
+
     return mesh;
 }
 
 
-SgMesh* YAMLSceneReaderImpl::readIndexedFaceSet(Mapping& node)
+SgMesh* YAMLSceneReaderImpl::readIndexedFaceSet(Mapping& info)
 {
     SgPolygonMeshPtr polygonMesh = new SgPolygonMesh;
 
-    Listing& coordinateNode = *node.findListing("coordinate");
+    Listing& coordinateNode = *info.findListing("coordinate");
     if(coordinateNode.isValid()){
         const int size = coordinateNode.size() / 3;
         SgVertexArray& vertices = *polygonMesh->setVertices(new SgVertexArray());
@@ -721,7 +837,7 @@ SgMesh* YAMLSceneReaderImpl::readIndexedFaceSet(Mapping& node)
         }
     }
 
-    Listing& coordIndexNode = *node.findListing("coordIndex");
+    Listing& coordIndexNode = *info.findListing("coordIndex");
     if(coordIndexNode.isValid()){
         SgIndexArray& polygonVertices = polygonMesh->polygonVertices();
         const int size = coordIndexNode.size();
@@ -731,7 +847,7 @@ SgMesh* YAMLSceneReaderImpl::readIndexedFaceSet(Mapping& node)
         }
     }
 
-    Listing& texCoordNode = *node.findListing("texCoord");
+    Listing& texCoordNode = *info.findListing("texCoord");
     if(texCoordNode.isValid()){
         const int size = texCoordNode.size() / 2;
         SgTexCoordArray& texCoord = *polygonMesh->setTexCoords(new SgTexCoordArray());
@@ -744,7 +860,7 @@ SgMesh* YAMLSceneReaderImpl::readIndexedFaceSet(Mapping& node)
         }
     }
 
-    Listing& texCoordIndexNode = *node.findListing("texCoordIndex");
+    Listing& texCoordIndexNode = *info.findListing("texCoordIndex");
     if(texCoordIndexNode.isValid()){
         SgIndexArray& texCoordIndices = polygonMesh->texCoordIndices();
         const int size = texCoordIndexNode.size();
@@ -755,10 +871,10 @@ SgMesh* YAMLSceneReaderImpl::readIndexedFaceSet(Mapping& node)
     }
 
     //polygonMeshTriangulator.setDeepCopyEnabled(true);
-    SgMesh* mesh= polygonMeshTriangulator.triangulate(polygonMesh);
+    SgMesh* mesh = polygonMeshTriangulator.triangulate(polygonMesh);
     const string& errorMessage = polygonMeshTriangulator.errorMessage();
     if(!errorMessage.empty()){
-        node.throwException("Error of an IndexedFaceSet node: \n" + errorMessage);
+        info.throwException("Error of an IndexedFaceSet node: \n" + errorMessage);
     }
 
     if(generateTexCoord){
@@ -767,49 +883,57 @@ SgMesh* YAMLSceneReaderImpl::readIndexedFaceSet(Mapping& node)
         }
     }
 
-    double creaseAngle = node.get("creaseAngle", 0.0);
-    normalGenerator.generateNormals(mesh, creaseAngle);
+    double creaseAngle = 0.0;
+    self->readAngle(info, "creaseAngle", creaseAngle);
+    meshFilter.generateNormals(mesh, creaseAngle);
+
+    mesh->setSolid(info.get("solid", mesh->isSolid()));
 
     return mesh;
 }
 
 
-SgMesh* YAMLSceneReaderImpl::readResourceAsGeometry(Mapping& node)
+SgMesh* YAMLSceneReaderImpl::readResourceAsGeometry(Mapping& info)
 {
-    SgNode* resource = readResource(node);
+    SgNode* resource = readResource(info);
     if(resource){
         SgShape* shape = dynamic_cast<SgShape*>(resource);
         if(!shape){
-            node.throwException(_("A resouce specified as a geometry must be a single mesh"));
+            info.throwException(_("A resouce specified as a geometry must be a single mesh"));
         }
-        if(generateTexCoord){
+        double creaseAngle;
+        if(readAngle(info, "creaseAngle", creaseAngle)){
+            meshFilter.setNormalOverwritingEnabled(true);
+            bool removeRedundantVertices = info.get("removeRedundantVertices", false);
+            meshFilter.generateNormals(shape->mesh(), creaseAngle, removeRedundantVertices);
+            meshFilter.setNormalOverwritingEnabled(false);
+        }
+        if(!generateTexCoord){
+            return shape->mesh();
+        } else {
             SgMesh* mesh = shape->mesh();
             if(mesh && !mesh->hasTexCoords()){
                 meshGenerator.generateTextureCoordinateForIndexedFaceSet(mesh);
             }
             return mesh;
-        }else{
-            return shape->mesh();
         }
     }
     return 0;
 }
 
 
-void YAMLSceneReaderImpl::readAppearance(SgShape* shape, Mapping& node)
+void YAMLSceneReaderImpl::readAppearance(SgShape* shape, Mapping& info)
 {
-    Mapping& material = *node.findMapping("material");
+    Mapping& material = *info.findMapping("material");
     if(material.isValid()){
         readMaterial(shape, material);
-    } else {
-        setDefaultMaterial(shape);
     }
 
-    Mapping& texture = *node.findMapping("texture");
+    Mapping& texture = *info.findMapping("texture");
     if(texture.isValid()){
         readTexture(shape, texture);
 
-        Mapping& textureTransform = *node.findMapping("textureTransform");
+        Mapping& textureTransform = *info.findMapping("textureTransform");
         if(textureTransform.isValid() && shape->texture()){
             readTextureTransform(shape->texture(), textureTransform);
         }
@@ -817,41 +941,38 @@ void YAMLSceneReaderImpl::readAppearance(SgShape* shape, Mapping& node)
 }
 
 
-void YAMLSceneReaderImpl::readMaterial(SgShape* shape, Mapping& node)
+void YAMLSceneReaderImpl::readMaterial(SgShape* shape, Mapping& info)
 {
     SgMaterialPtr material = new SgMaterial;
 
-    material->setAmbientIntensity(node.get("ambientIntensity", 0.2));
-    if(read(node, "diffuseColor", color)){
-        material->setDiffuseColor(color);
-    } else {
-        material->setDiffuseColor(Vector3f(0.8f, 0.8f, 0.8f));
+    double value;
+    if(info.read("ambientIntensity", value)){
+        material->setAmbientIntensity(value);
     }
-    if(read(node, "emissiveColor", color)) material->setEmissiveColor(color);
-    material->setShininess(node.get("shininess", 0.2));
-    if(read(node, "specularColor", color)) material->setSpecularColor(color);
-    if(node.read("transparency", value)) material->setTransparency(value);
+    if(read(info, "diffuseColor", color)){
+        material->setDiffuseColor(color);
+    }
+    if(read(info, "emissiveColor", color)){
+        material->setEmissiveColor(color);
+    }
+    if(info.read("shininess", value)){
+        material->setShininess(value);
+    }
+    if(read(info, "specularColor", color)){
+        material->setSpecularColor(color);
+    }
+    if(info.read("transparency", value)){
+        material->setTransparency(value);
+    }
 
     shape->setMaterial(material);
 }
 
 
-void YAMLSceneReaderImpl::setDefaultMaterial(SgShape* shape)
-{
-    if(!defaultMaterial){
-        defaultMaterial = new SgMaterial;
-        defaultMaterial->setDiffuseColor(Vector3f(0.8f, 0.8f, 0.8f));
-        defaultMaterial->setAmbientIntensity(0.2f);
-        defaultMaterial->setShininess(0.2f);
-    }
-    shape->setMaterial(defaultMaterial);
-}
-
-
-void YAMLSceneReaderImpl::readTexture(SgShape* shape, Mapping& node)
+void YAMLSceneReaderImpl::readTexture(SgShape* shape, Mapping& info)
 {
     string& url = symbol;
-    if(node.read("url", url)){
+    if(info.read("url", url)){
         if(!url.empty()){
             SgImagePtr image=0;
             ImagePathToSgImageMap::iterator p = imagePathToSgImageMap.find(url);
@@ -860,15 +981,14 @@ void YAMLSceneReaderImpl::readTexture(SgShape* shape, Mapping& node)
             }else{
                 try{
                     image = new SgImage;
-                    filesystem::path filepath(url);
+                    stdx::filesystem::path filepath(url);
                     if(!checkAbsolute(filepath)){
-                        filepath = baseDirectory / filepath;
-                        filepath.normalize();
+                        filepath = stdx::filesystem::lexically_normal(baseDirectory / filepath);
                     }
                     imageIO.load(image->image(), getAbsolutePathString(filepath));
                     imagePathToSgImageMap[url] = image;
                 }catch(const exception_base& ex){
-                    node.throwException(*boost::get_error_info<error_info_message>(ex));
+                    info.throwException(*boost::get_error_info<error_info_message>(ex));
                 }
             }
             if(image){
@@ -876,8 +996,8 @@ void YAMLSceneReaderImpl::readTexture(SgShape* shape, Mapping& node)
                 texture->setImage(image);
                 bool repeatS = true;
                 bool repeatT = true;
-                node.read("repeatS", repeatS);
-                node.read("repeatT", repeatT);
+                info.read("repeatS", repeatS);
+                info.read("repeatT", repeatT);
                 texture->setRepeat(repeatS, repeatT);
                 texture->setTextureTransform(new SgTextureTransform);
                 shape->setTexture(texture);
@@ -887,45 +1007,45 @@ void YAMLSceneReaderImpl::readTexture(SgShape* shape, Mapping& node)
 }
 
 
-void YAMLSceneReaderImpl::readTextureTransform(SgTexture* texture, Mapping& node)
+void YAMLSceneReaderImpl::readTextureTransform(SgTexture* texture, Mapping& info)
 {
     SgTextureTransform* textureTransform = texture->textureTransform();
-    if(read(node, "center", v2)) textureTransform->setCenter(v2);
-    if(read(node, "scale", v2)) textureTransform->setScale(v2);
-    if(read(node, "translation", v2)) textureTransform->setTranslation(v2);
-    if(self->readAngle(node, "rotation", value)) textureTransform->setRotation(value);
+    if(read(info, "center", v2)) textureTransform->setCenter(v2);
+    if(read(info, "scale", v2)) textureTransform->setScale(v2);
+    if(read(info, "translation", v2)) textureTransform->setTranslation(v2);
+    if(self->readAngle(info, "rotation", value)) textureTransform->setRotation(value);
 }
 
 
-void YAMLSceneReaderImpl::readLightCommon(Mapping& node, SgLight* light)
+void YAMLSceneReaderImpl::readLightCommon(Mapping& info, SgLight* light)
 {
-    if(node.read("on", on)) light->on(on);
-    if(read(node, "color", color)) light->setColor(color);
-    if(node.read("intensity", value)) light->setIntensity(value);
-    if(node.read("ambientIntensity", value)) light->setAmbientIntensity(value);
+    if(info.read("on", on)) light->on(on);
+    if(read(info, "color", color)) light->setColor(color);
+    if(info.read("intensity", value)) light->setIntensity(value);
+    if(info.read("ambientIntensity", value)) light->setAmbientIntensity(value);
 }
 
 
-SgNode* YAMLSceneReaderImpl::readDirectionalLight(Mapping& node)
+SgNode* YAMLSceneReaderImpl::readDirectionalLight(Mapping& info)
 {
     SgDirectionalLightPtr light = new SgDirectionalLight;
-    readLightCommon(node, light);
-    if(read(node, "direction", v)) light->setDirection(v);
+    readLightCommon(info, light);
+    if(read(info, "direction", v)) light->setDirection(v);
     return light.retn();
 }
 
 
-SgNode* YAMLSceneReaderImpl::readSpotLight(Mapping& node)
+SgNode* YAMLSceneReaderImpl::readSpotLight(Mapping& info)
 {
     SgSpotLightPtr light = new SgSpotLight;
 
-    readLightCommon(node, light);
+    readLightCommon(info, light);
 
-    if(read(node, "direction", v)) light->setDirection(v);
-    if(readAngle(node, "beamWidth", value)) light->setBeamWidth(value);
-    if(readAngle(node, "cutOffAngle", value)) light->setCutOffAngle(value);
-    if(node.read("cutOffExponent", value)) light->setCutOffExponent(value);
-    if(read(node, "attenuation", color)){
+    if(read(info, "direction", v)) light->setDirection(v);
+    if(readAngle(info, "beamWidth", value)) light->setBeamWidth(value);
+    if(readAngle(info, "cutOffAngle", value)) light->setCutOffAngle(value);
+    if(info.read("cutOffExponent", value)) light->setCutOffExponent(value);
+    if(read(info, "attenuation", color)){
         light->setConstantAttenuation(color[0]);
         light->setLinearAttenuation(color[1]);
         light->setQuadraticAttenuation(color[2]);
@@ -935,93 +1055,161 @@ SgNode* YAMLSceneReaderImpl::readSpotLight(Mapping& node)
 }
 
 
-SgNode* YAMLSceneReaderImpl::readResource(Mapping& node)
+SgNode* YAMLSceneReaderImpl::readResource(Mapping& info)
 {
-    SgNode* scene = 0;
+    auto resource = readResourceNode(info);
+    if(resource.scene){
+        return resource.scene;
+    } else if(resource.info){
+        return readNode(*resource.info->toMapping());
+    }
+    return nullptr;
+}
 
-    string& uri = symbol;
-    if(node.read("uri", uri)){
-        SgNodePtr resource;
-        string nodeName;
 
-        ValueNode& exclude = *node.find("exclude");
-        if(exclude.isValid()){
-            if(exclude.isListing()){
-                Listing& excludes = *exclude.toListing();
-                for(auto& nodeToExclude : excludes){
-                    decoupleResourceNode(uri, nodeToExclude->toString());
-                }
-            } else if(exclude.isString()){
-                decoupleResourceNode(uri, exclude.toString());
+YAMLSceneReader::Resource YAMLSceneReader::readResourceNode(Mapping& info)
+{
+    return impl->readResourceNode(info);
+}
+
+
+YAMLSceneReader::Resource YAMLSceneReaderImpl::readResourceNode(Mapping& info)
+{
+    string uri = info["uri"].toString();
+
+    ValueNode& exclude = *info.find("exclude");
+    if(exclude.isValid()){
+        if(exclude.isString()){
+            decoupleResourceNode(info, uri, exclude.toString());
+        } else if(exclude.isListing()){
+            Listing& excludes = *exclude.toListing();
+            for(auto& nodeToExclude : excludes){
+                decoupleResourceNode(info, uri, nodeToExclude->toString());
             }
-        }
-        
-        if(node.read("node", nodeName)){
-            resource = loadResource(uri, nodeName);
         } else {
-            resource = loadResource(uri);
+            exclude.throwException(_("The value of \"exclude\" must be string or sequence."));
         }
-        scene = readTransformParameters(node, resource);
-        if(scene == resource){
-            return resource.retn();
+    }
+        
+    auto resource = loadResource(info, uri);
+
+    if(resource.scene){
+        resource.scene = readTransformParameters(info, resource.scene);
+    }
+
+    return resource;
+}
+
+
+YAMLSceneReader::Resource YAMLSceneReaderImpl::loadResource(Mapping& resourceNode, const string& uri)
+{
+    vector<string> names;
+    auto node = resourceNode.find("node");
+    if(node->isValid()){
+        if(node->isString()){
+            names.push_back(node->toString());
+        } else if(node->isListing()){
+            auto nodes = node->toListing();
+            for(auto& nodei : *nodes){
+                names.push_back(nodei->toString());
+            }
         }
     }
     
-    return scene;
-}
-
-
-SgNode* YAMLSceneReaderImpl::loadResource(const string& uri)
-{
-    ResourceInfo* resourceInfo = getOrCreateResourceInfo(uri);
+    YAMLSceneReader::Resource resource;
+    ResourceInfo* resourceInfo = getOrCreateResourceInfo(resourceNode, uri);
     if(resourceInfo){
-        return resourceInfo->rootNode;
-    }
-    return 0;
-}
-
-
-SgNode* YAMLSceneReaderImpl::loadResource(const string& uri, const string& nodeName)
-{
-    SgNode* scene = 0;
-    ResourceInfo* resourceInfo = getOrCreateResourceInfo(uri);
-    if(resourceInfo){
-        if(nodeName.empty()){
-            scene = resourceInfo->rootNode;
-        } else {
-            unique_ptr<NodeMap>& nodeMap = resourceInfo->nodeMap;
-            if(!nodeMap){
-                makeNodeMap(resourceInfo);
-            }
-            auto iter = nodeMap->find(nodeName);
-            if(iter == nodeMap->end()){
-                os() << str(format("Warning: Node \"%1%\" is not found in \"%2%\".") % nodeName % uri) << endl;
+        resource.directory = resourceInfo->directory;
+        bool isYamlResouce = (resourceInfo->yamlReader != nullptr);
+        if(names.empty()){
+            if(isYamlResouce){
+                resource.info = resourceInfo->yamlReader->document();
             } else {
-                NodeInfo& nodeInfo = iter->second;
-                if(nodeInfo.parent){
-                    nodeInfo.parent->removeChild(nodeInfo.node);
-                    nodeInfo.parent = 0;
-                    adjustNodeCoordinate(nodeInfo);
-                }
-                scene = nodeInfo.node;
+                resource.scene = resourceInfo->scene;
+            }
+        } else {
+            if(isYamlResouce){
+                extractNamedYamlNodes(resourceNode, resourceInfo, names, uri, resource);
+            } else {
+                extractNamedSceneNodes(resourceNode, resourceInfo, names, uri, resource);
             }
         }
     }
-    return scene;
+    
+    return resource;
 }
 
 
-void YAMLSceneReaderImpl::decoupleResourceNode(const string& uri, const string& nodeName)
+void YAMLSceneReaderImpl::extractNamedYamlNodes
+(Mapping& resourceNode, ResourceInfo* info, vector<string>& names, const string& uri, YAMLSceneReader::Resource& resource)
 {
-    ResourceInfo* resourceInfo = getOrCreateResourceInfo(uri);
+    Listing* group = nullptr;
+    if(names.size() >= 2){
+        group = new Listing;
+        resource.info = group;
+    }
+    for(auto& name : names){
+        auto node = info->yamlReader->findAnchoredNode(name);
+        if(!node){
+            resourceNode.throwException(
+                format(_("Node \"{0}\" is not found in \"{1}\"."), name, uri));
+        }
+        if(group){
+            group->append(node);
+        } else {
+            resource.info = node;
+        }
+    }
+}
+
+
+void YAMLSceneReaderImpl::extractNamedSceneNodes
+(Mapping& resourceNode, ResourceInfo* info, vector<string>& names, const string& uri, YAMLSceneReader::Resource& resource)
+{
+    unique_ptr<SceneNodeMap>& nodeMap = info->sceneNodeMap;
+    if(!nodeMap){
+        makeSceneNodeMap(info);
+    }
+
+    SgGroupPtr group;
+    if(names.size() >= 2){
+        group = new SgGroup;
+        resource.scene = group;
+    }
+
+    for(auto& name : names){
+        auto iter = nodeMap->find(name);
+        if(iter == nodeMap->end()){
+            resourceNode.throwException(
+                format(_("Node \"{0}\" is not found in \"{1}\"."), name, uri));
+        } else {
+            SceneNodeInfo& nodeInfo = iter->second;
+            if(nodeInfo.parent){
+                nodeInfo.parent->removeChild(nodeInfo.node);
+                nodeInfo.parent = 0;
+                adjustNodeCoordinate(nodeInfo);
+            }
+            if(group){
+                group->addChild(nodeInfo.node);
+            } else {
+                resource.scene = nodeInfo.node;
+            }
+        }
+    }
+}
+
+
+void YAMLSceneReaderImpl::decoupleResourceNode(Mapping& resourceNode, const string& uri, const string& nodeName)
+{
+    ResourceInfo* resourceInfo = getOrCreateResourceInfo(resourceNode, uri);
     if(resourceInfo){
-        unique_ptr<NodeMap>& nodeMap = resourceInfo->nodeMap;
+        unique_ptr<SceneNodeMap>& nodeMap = resourceInfo->sceneNodeMap;
         if(!nodeMap){
-            makeNodeMap(resourceInfo);
+            makeSceneNodeMap(resourceInfo);
         }
         auto iter = nodeMap->find(nodeName);
         if(iter != nodeMap->end()){
-            NodeInfo& nodeInfo = iter->second;
+            SceneNodeInfo& nodeInfo = iter->second;
             if(nodeInfo.parent){
                 nodeInfo.parent->removeChild(nodeInfo.node);
                 nodeInfo.parent = 0;
@@ -1032,7 +1220,7 @@ void YAMLSceneReaderImpl::decoupleResourceNode(const string& uri, const string& 
 }
 
 
-ResourceInfo* YAMLSceneReaderImpl::getOrCreateResourceInfo(const string& uri)
+ResourceInfo* YAMLSceneReaderImpl::getOrCreateResourceInfo(Mapping& resourceNode, const string& uri)
 {
     auto iter = resourceInfoMap.find(uri);
 
@@ -1040,7 +1228,7 @@ ResourceInfo* YAMLSceneReaderImpl::getOrCreateResourceInfo(const string& uri)
         return iter->second;
     }
 
-    filesystem::path filepath;
+    stdx::filesystem::path filepath;
         
     if(!isUriSchemeRegexReady){
         uriSchemeRegex.assign("^(.+)://(.+)$");
@@ -1059,7 +1247,8 @@ ResourceInfo* YAMLSceneReaderImpl::getOrCreateResourceInfo(const string& uri)
                 std::lock_guard<std::mutex> guard(uriSchemeHandlerMutex);
                 auto iter = uriSchemeHandlerMap.find(scheme);
                 if(iter == uriSchemeHandlerMap.end()){
-                    os() << str(format("Warning: The \"%1%\" scheme of \"%2%\" is not available.") % scheme % uri) << endl;
+                    resourceNode.throwException(
+                        format(_("The \"{0}\" scheme of \"{1}\" is not available"), scheme, uri));
                 } else {
                     auto& handler = iter->second;
                     filepath = handler(match.str(2), os());
@@ -1071,30 +1260,49 @@ ResourceInfo* YAMLSceneReaderImpl::getOrCreateResourceInfo(const string& uri)
     if(!hasScheme){
         filepath = uri;
         if(!checkAbsolute(filepath)){
-            filepath = baseDirectory / filepath;
-            filepath.normalize();
+            filepath = stdx::filesystem::lexically_normal(baseDirectory / filepath);
         }
     }
-    
-    ResourceInfo* info = 0;
     
     if(filepath.empty()){
-        resourceInfoMap[uri] = info;
-        
-    } else {
-        SgNodePtr rootNode = sceneLoader.load(getAbsolutePathString(filepath));
-        if(rootNode){
-            info = new ResourceInfo;
-            info->rootNode = rootNode;
-        }
-        resourceInfoMap[uri] = info;
+        resourceNode.throwException(
+            format(_("The resource URI \"{}\" is not valid"), uri));
     }
+
+    ResourceInfoPtr info = new ResourceInfo;
+
+    string filename = stdx::filesystem::absolute(filepath).string();
+    string ext = filepath.extension().string();
+    std::transform(ext.begin(), ext.end(), ext.begin(), ::tolower);
+
+    if(ext == ".yaml" || ext == ".yml"){
+        auto reader = new YAMLReader;
+        reader->importAnchors(*mainYamlReader);
+        if(!reader->load(filename)){
+            resourceNode.throwException(
+                format(_("YAML resource \"{0}\" cannot be loaded ({1})"),
+                 uri, reader->errorMessage()));
+        }
+        info->yamlReader.reset(reader);
+
+    } else {
+        SgNodePtr scene = sceneLoader.load(filename);
+        if(!scene){
+            resourceNode.throwException(
+                format(_("The resource is not found at URI \"{}\""), uri));
+        }
+        info->scene = scene;
+    }
+
+    info->directory = filepath.parent_path().string();
+    
+    resourceInfoMap[uri] = info;
 
     return info;
 }
 
 
-void YAMLSceneReaderImpl::adjustNodeCoordinate(NodeInfo& info)
+void YAMLSceneReaderImpl::adjustNodeCoordinate(SceneNodeInfo& info)
 {
     if(auto pos = dynamic_cast<SgPosTransform*>(info.node.get())){
         if(info.isScaled){
@@ -1130,19 +1338,19 @@ void YAMLSceneReaderImpl::adjustNodeCoordinate(NodeInfo& info)
 }
         
 
-void YAMLSceneReaderImpl::makeNodeMap(ResourceInfo* info)
+void YAMLSceneReaderImpl::makeSceneNodeMap(ResourceInfo* info)
 {
-    info->nodeMap.reset(new NodeMap);
-    NodeInfo nodeInfo;
+    info->sceneNodeMap.reset(new SceneNodeMap);
+    SceneNodeInfo nodeInfo;
     nodeInfo.parent = 0;
-    nodeInfo.node = info->rootNode;
+    nodeInfo.node = info->scene;
     nodeInfo.R = Matrix3::Identity();
     nodeInfo.isScaled = false;
-    makeNodeMapSub(nodeInfo, *info->nodeMap);
+    makeSceneNodeMapSub(nodeInfo, *info->sceneNodeMap);
 }
 
 
-void YAMLSceneReaderImpl::makeNodeMapSub(const NodeInfo& nodeInfo, NodeMap& nodeMap)
+void YAMLSceneReaderImpl::makeSceneNodeMapSub(const SceneNodeInfo& nodeInfo, SceneNodeMap& nodeMap)
 {
     const string& name = nodeInfo.node->name();
     bool wasProcessed = false;
@@ -1152,7 +1360,7 @@ void YAMLSceneReaderImpl::makeNodeMapSub(const NodeInfo& nodeInfo, NodeMap& node
     if(!wasProcessed){
         SgGroup* group = dynamic_cast<SgGroup*>(nodeInfo.node.get());
         if(group){
-            NodeInfo childInfo;
+            SceneNodeInfo childInfo;
             childInfo.parent = group;
             childInfo.isScaled = nodeInfo.isScaled;
             SgTransform* transform = dynamic_cast<SgTransform*>(group);
@@ -1168,7 +1376,7 @@ void YAMLSceneReaderImpl::makeNodeMapSub(const NodeInfo& nodeInfo, NodeMap& node
             }
             for(SgNode* child : *group){
                 childInfo.node = child;
-                makeNodeMapSub(childInfo, nodeMap);
+                makeSceneNodeMapSub(childInfo, nodeMap);
             }
         }
     }

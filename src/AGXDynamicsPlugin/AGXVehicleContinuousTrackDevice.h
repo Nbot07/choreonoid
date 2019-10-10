@@ -2,6 +2,7 @@
 #define CNOID_AGXDYNAMICS_PLUGIN_AGX_VEHICLE_TRACK_H
 
 #include <cnoid/Device>
+#include <cnoid/SceneDrawables>
 #include <string>
 #include <vector>
 
@@ -19,7 +20,7 @@ struct AGXVehicleContinuousTrackDeviceDesc
         nodeThickerThickness = 0.09;
         useThickerNodeEvery = 0;
         hingeCompliance = 1.0E-10;
-        hingeDamping = 0.0333;
+        hingeSpookDamping = 0.0333;
         minStabilizingHingeNormalForce = 100;
         stabilizingHingeFrictionParameter = 1.5;
         nodesToWheelsMergeThreshold = -0.1;
@@ -29,7 +30,7 @@ struct AGXVehicleContinuousTrackDeviceDesc
         contactReduction = 1;
         enableLockToReachMergeCondition = false;
         lockToReachMergeConditionCompliance = 1.0E-11;
-        lockToReachMergeConditionDamping = 3/ 60;
+        lockToReachMergeConditionSpookDamping = 3/ 60;
         maxAngleMergeCondition = 1.0E-5;
         sprocketNames.clear();
         idlerNames.clear();
@@ -47,7 +48,7 @@ struct AGXVehicleContinuousTrackDeviceDesc
     double nodeThickerThickness;
     int useThickerNodeEvery;
     double hingeCompliance;
-    double hingeDamping;
+    double hingeSpookDamping;
     double minStabilizingHingeNormalForce;
     double stabilizingHingeFrictionParameter;
     double nodesToWheelsMergeThreshold;
@@ -57,13 +58,14 @@ struct AGXVehicleContinuousTrackDeviceDesc
     int contactReduction;
     bool enableLockToReachMergeCondition;
     double lockToReachMergeConditionCompliance;
-    double lockToReachMergeConditionDamping;
+    double lockToReachMergeConditionSpookDamping;
     double maxAngleMergeCondition;
     vector<string> sprocketNames;
     vector<string> idlerNames;
     vector<string> rollerNames;
     vector<string> guideNames;
     string materialName;
+    SgShapePtr nodeShape;
 };
 
 struct TrackState{
@@ -81,7 +83,6 @@ public:
     void copyStateFrom(const AGXVehicleContinuousTrackDevice& other);
     virtual void copyStateFrom(const DeviceState& other) override;
     virtual DeviceState* cloneState() const override;
-    virtual Device* clone() const override;
     virtual void forEachActualType(std::function<bool(const std::type_info& type)> func) override;
     virtual int stateSize() const override;
     virtual const double* readState(const double* buf) override;
@@ -98,6 +99,10 @@ public:
     void reserveTrackStateSize(const unsigned int& num );
     void addTrackState(const Vector3& boxSize, const Position& pos);
     TrackStates& getTrackStates();
+    SgShape* getNodeShape();
+
+protected:
+    virtual Device* doClone(BodyCloneMap* cloneMap) const override;
 
 private:
     TrackStates m_trackStates;

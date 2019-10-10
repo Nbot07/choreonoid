@@ -1,4 +1,3 @@
-
 # @author Shin'ichiro Nakaoka
 
 #set(CMAKE_BUILD_TYPE Debug)
@@ -9,7 +8,6 @@ set(sources
   MenuManager.cpp
   Menu.cpp
   ProjectManager.cpp
-  ParametricPathProcessor.cpp
   PathVariableEditor.cpp
   PluginManager.cpp
   MainWindow.cpp
@@ -22,10 +20,12 @@ set(sources
   ItemManager.cpp
   Item.cpp
   RootItem.cpp
+  ItemList.cpp
   ItemPath.cpp
   ItemTreeView.cpp
   ItemPropertyView.cpp
-  SelectionListEditor.cpp
+  TargetItemPicker.cpp
+  StringListComboBox.cpp
   MultiSeqItemCreationPanel.cpp
   ToolBar.cpp
   TimeBar.cpp
@@ -40,10 +40,12 @@ set(sources
   Process.cpp
   Action.cpp
   ActionGroup.cpp
+  Widget.cpp
   SpinBox.cpp
   FloatingNumberBox.cpp
   ScrollBar.cpp
   Slider.cpp
+  Dial.cpp
   Splitter.cpp
   Buttons.cpp
   ButtonGroup.cpp
@@ -62,6 +64,7 @@ set(sources
   OptionManager.cpp
   Plugin.cpp
   FolderItem.cpp
+  SubProjectItem.cpp
   AbstractSeqItem.cpp
   MultiValueSeqItem.cpp
   MultiSE3SeqItem.cpp
@@ -83,6 +86,7 @@ set(sources
   ShaderPrograms.cpp
   GLSLSceneRenderer.cpp
   SceneWidget.cpp
+  SceneWidgetEvent.cpp
   SceneWidgetEditable.cpp
   InteractiveCameraTransform.cpp
   SceneProjector.cpp
@@ -99,10 +103,13 @@ set(sources
   MultiPointSetItem.cpp
   MovieRecorder.cpp
   TextEditView.cpp
+  GeneralSliderView.cpp
   ImageView.cpp
   TextEdit.cpp
   TaskView.cpp
   VirtualJoystickView.cpp
+  MessageLogItem.cpp
+  LightingItem.cpp
   gl_core_3_3.c
   #gl_core_4_0.c
   #gl_core_4_4.c
@@ -123,10 +130,12 @@ set(headers
   Process.h
   Action.h
   ActionGroup.h
+  Widget.h
   SpinBox.h
   FloatingNumberBox.h
   ScrollBar.h
   Slider.h
+  Dial.h
   Splitter.h
   Buttons.h
   ButtonGroup.h
@@ -153,14 +162,15 @@ set(headers
   ProjectManager.h
   PluginManager.h
   Plugin.h
-  ParametricPathProcessor.h
   MessageView.h
   ItemTreeView.h
   ItemList.h
   Item.h
+  TargetItemPicker.h
   PutPropertyFunction.h
   RootItem.h
   FolderItem.h
+  SubProjectItem.h
   AbstractSeqItem.h
   MultiSeqItem.h
   MultiValueSeqItem.h
@@ -182,6 +192,7 @@ set(headers
   LazySignal.h
   LazyCaller.h
   SceneWidget.h
+  SceneWidgetEvent.h
   SceneProjector.h
   SceneDragProjector.h
   SceneDragger.h
@@ -200,10 +211,13 @@ set(headers
   PointSetItem.h
   MultiPointSetItem.h
   TextEditView.h
+  GeneralSliderView.h
   ImageView.h
   JoystickCapture.h
   TextEdit.h
   TaskView.h
+  MessageLogItem.h
+  LightingItem.h
   exportdecl.h
   )
 
@@ -216,10 +230,12 @@ set(qtheaders
   Process.h
   Action.h
   ActionGroup.h
+  Widget.h
   SpinBox.h
   FloatingNumberBox.h
   ScrollBar.h
   Slider.h
+  Dial.h
   Splitter.h
   Buttons.h
   ButtonGroup.h
@@ -234,13 +250,13 @@ set(qtheaders
   Timer.h
   SocketNotifier.h
   InfoBar.h
-  ItemTreeView.h
-  SelectionListEditor.h
+  StringListComboBox.h
   TextEdit.h
   )
 
-QTX_ADD_RESOURCES(RC_SRCS Base.qrc)
-QTX_WRAP_CPP(qtsources ${qtheaders})
+QT5_ADD_RESOURCES(RC_SRCS Base.qrc)
+QT5_WRAP_CPP(qtsources ${qtheaders})
+
 set(sources ${sources} ${qtsources})
 
 make_gettext_mofiles(${target} mofiles)
@@ -248,40 +264,29 @@ make_gettext_mofiles(${target} mofiles)
 add_cnoid_library(${target} SHARED ${sources} ${headers} ${mofiles} ${RC_SRCS})
 
 if(${CMAKE_SYSTEM_NAME} MATCHES "Darwin")
-
   target_link_libraries(${target}
     CnoidUtil
     ${QT_LIBRARIES} ${Boost_PROGRAM_OPTIONS_LIBRARY} ${OPENGL_LIBRARIES}
     intl
     )
-
-elseif(UNIX)
-
+elseif(MSVC)
+  target_link_libraries(${target}
+    CnoidUtil
+    ${QT_LIBRARIES}
+    general glu32 opengl32
+    )
+else()
   target_link_libraries(${target}
     CnoidUtil
     ${QT_LIBRARIES} ${Boost_PROGRAM_OPTIONS_LIBRARY} ${OPENGL_LIBRARY}
-    icuuc
-    X11
-    Xfixes
-    )
-
-elseif(MSVC)
-
-  target_link_libraries(${target}
-    ${QT_LIBRARIES}
-    general glu32 opengl32
-    CnoidUtil
+    icuuc X11 Xfixes
     )
 endif()
 
 apply_common_setting_for_library(${target} "${headers}")
 
 if(ENABLE_PYTHON)
-  if(USE_PYBIND11)
-    add_subdirectory(pybind11)
-  elseif(USE_BOOST_PYTHON)
-    add_subdirectory(boostpython)
-  endif()
+  add_subdirectory(pybind11)
 endif()
 
 add_subdirectory(lua)

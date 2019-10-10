@@ -6,12 +6,10 @@
 
 set(sources
   BodyPlugin.cpp
-  BodyItem.cpp
   WorldItem.cpp
-  BodyMotionItem.cpp
-  ZMPSeqItem.cpp
-  MultiDeviceStateSeqItem.cpp
-  WorldLogFileItem.cpp
+  CoordinateFrameSetPairItem.cpp
+  CoordinateFrameSetItem.cpp
+  BodyItem.cpp
   SimulatorItem.cpp
   SubSimulatorItem.cpp
   ControllerItem.cpp
@@ -19,9 +17,17 @@ set(sources
   BodyMotionControllerItem.cpp
   SimulationScriptItem.cpp
   AISTSimulatorItem.cpp
+  KinematicSimulatorItem.cpp
   GLVisionSimulatorItem.cpp
+  FisheyeLensConverter.cpp
+  BodyMotionItem.cpp
+  ZMPSeqItem.cpp
+  MultiDeviceStateSeqItem.cpp
+  WorldLogFileItem.cpp
+  IoConnectionMapItem.cpp
   SensorVisualizerItem.cpp
   BodyTrackingCameraItem.cpp
+  BodyMarkerItem.cpp
   BodyMotionEngine.cpp
   KinematicFaultChecker.cpp
   SplineFilterDialog.cpp
@@ -33,10 +39,13 @@ set(sources
   LinkTreeWidget.cpp
   LinkSelectionView.cpp
   LinkPropertyView.cpp
+  LinkPositionView.cpp
   BodyLinkView.cpp
-  JointSliderView.cpp
+  JointDisplacementView.cpp
+  CoordinateFrameSetView.cpp
   JointStateView.cpp
   BodyStateView.cpp
+  IoConnectionView.cpp
   JointGraphView.cpp
   LinkGraphView.cpp
   HrpsysFileIO.cpp
@@ -46,21 +55,26 @@ set(sources
   )
 
 set(headers
-  BodyItem.h
   WorldItem.h
-  BodyMotionItem.h
-  ZMPSeqItem.cpp
-  MultiDeviceStateSeqItem.h
-  WorldLogFileItem.h
+  BodyItem.h
+  CoordinateFrameSetPairItem.h
+  CoordinateFrameSetItem.h
   SimulatorItem.h
   SubSimulatorItem.h
   ControllerItem.h
   SimpleControllerItem.h
   SimulationScriptItem.h
   AISTSimulatorItem.h
+  KinematicSimulatorItem.h
   GLVisionSimulatorItem.h
+  BodyMotionItem.h
+  ZMPSeqItem.h
+  MultiDeviceStateSeqItem.h
+  WorldLogFileItem.h
+  IoConnectionMapItem.h
   SensorVisualizerItem.h
   BodyTrackingCameraItem.h
+  BodyMarkerItem.h
   KinematicFaultChecker.h
   BodyBar.h
   KinematicsBar.h
@@ -79,8 +93,8 @@ set(target CnoidBodyPlugin)
 
 make_gettext_mofiles(${target} mofiles)
 
-QTX_ADD_RESOURCES(RC_SRCS BodyPlugin.qrc)
-QTX_WRAP_CPP(qtsources LinkTreeWidget.h)
+QT5_ADD_RESOURCES(RC_SRCS BodyPlugin.qrc)
+QT5_WRAP_CPP(qtsources LinkTreeWidget.h)
 set(sources ${sources} ${qtsources})
 
 include_directories(${CMAKE_CURRENT_SOURCE_DIR})
@@ -96,11 +110,7 @@ target_link_libraries(${target} CnoidBase CnoidBody ${boost_libraries})
 apply_common_setting_for_plugin(${target} "${headers}")
 
 if(ENABLE_PYTHON)
-  if(USE_PYBIND11)
-    add_subdirectory(pybind11)
-  elseif(USE_BOOST_PYTHON)
-    add_subdirectory(boostpython)
-  endif()
+  add_subdirectory(pybind11)
 endif()
 
 add_subdirectory(lua)

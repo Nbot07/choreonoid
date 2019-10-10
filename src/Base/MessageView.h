@@ -7,7 +7,6 @@
 
 #include <cnoid/View>
 #include <QString>
-#include <boost/format.hpp>
 #include <string>
 #include <iosfwd>
 #include "exportdecl.h"
@@ -33,31 +32,32 @@ public:
 
     enum MessageType { NORMAL, ERROR, WARNING, HIGHLIGHT };
 
-    void put(const char* message);
-    void put(const std::string& message);
-    void put(const boost::format& message);
-    void put(const QString& message);
+    void put(const char* message, int type = NORMAL);
+    void put(const std::string& message, int type = NORMAL);
+    void put(const QString& message, int type = NORMAL);
 
+    void putln();
+    void putln(const char* message, int type = NORMAL);
+    void putln(const std::string& message, int type = NORMAL);
+    void putln(const QString& message, int type = NORMAL);
+
+    void notify(const char* message, int type = NORMAL);
+    void notify(const std::string& message, int type = NORMAL);
+    void notify(const QString& message, int type = NORMAL);
+
+    //! \deprecated
     void put(int type, const char* message);
+    //! \deprecated
     void put(int type, const std::string& message);
-    void put(int type, const boost::format& message);
+    //! \deprecated
     void put(int type, const QString& message);
     
-    void putln();
-    void putln(const char* message);
-    void putln(const std::string& message);
-    void putln(const boost::format& message);
-    void putln(const QString& message);
-
+    //! \deprecated
     void putln(int type, const char* message);
+    //! \deprecated
     void putln(int type, const std::string& message);
-    void putln(int type, const boost::format& message);
+    //! \deprecated
     void putln(int type, const QString& message);
-
-    void notify(const char* message);
-    void notify(const std::string& message);
-    void notify(const boost::format& message);
-    void notify(const QString& message);
 
     int currentColumn();
         
@@ -87,12 +87,10 @@ CNOID_EXPORT std::ostream& mvout(bool doFlush = false);
 #endif
 
 CNOID_EXPORT void showMessageBox(const std::string& message);
-CNOID_EXPORT void showMessageBox(const boost::format& message);
 CNOID_EXPORT void showMessageBox(const char* message);
 CNOID_EXPORT void showMessageBox(const QString& message);
 
 CNOID_EXPORT void showWarningDialog(const std::string& message);
-CNOID_EXPORT void showWarningDialog(const boost::format& message);
 CNOID_EXPORT void showWarningDialog(const char* message);
 CNOID_EXPORT void showWarningDialog(const QString& message);
 

@@ -5,7 +5,6 @@
 #include "App.h"
 #include "AppUtil.h"
 #include "AppConfig.h"
-#include "ParametricPathProcessor.h"
 #include "ExtensionManager.h"
 #include "OptionManager.h"
 #include "PluginManager.h"
@@ -16,10 +15,17 @@
 #include "MainWindow.h"
 #include "RootItem.h"
 #include "FolderItem.h"
+#include "SubProjectItem.h"
 #include "ExtCommandItem.h"
 #include "SceneItem.h"
 #include "PointSetItem.h"
 #include "MultiPointSetItem.h"
+#include "LightingItem.h"
+#include "MessageLogItem.h"
+#include "MultiValueSeqItem.h"
+#include "MultiSE3SeqItem.h"
+#include "MultiSE3MatrixSeqItem.h"
+#include "Vector3SeqItem.h"
 #include "ViewManager.h"
 #include "MessageView.h"
 #include "ItemTreeView.h"
@@ -35,26 +41,28 @@
 #include "GraphBar.h"
 #include "MultiValueSeqGraphView.h"
 #include "MultiSE3SeqGraphView.h"
-#include "MultiValueSeqItem.h"
-#include "MultiSE3SeqItem.h"
-#include "MultiSE3MatrixSeqItem.h"
-#include "Vector3SeqItem.h"
+#include "TextEditView.h"
+#include "GeneralSliderView.h"
+#include "VirtualJoystickView.h"
 #include "PathVariableEditor.h"
+#include "GLSceneRenderer.h"
 #include "Licenses.h"
 #include "MovieRecorder.h"
 #include "LazyCaller.h"
-#include "TextEditView.h"
-#include "VirtualJoystickView.h"
 #include "DescriptionDialog.h"
 #include <cnoid/Config>
 #include <cnoid/ValueTree>
 #include <cnoid/CnoidUtil>
+#include <cnoid/ParametricPathProcessor>
+#include <fmt/format.h>
+#include <Eigen/Core>
 #include <QApplication>
 #include <QTextCodec>
-#include <QGLFormat>
+#include <QSurfaceFormat>
 #include <QTextStream>
 #include <QFile>
-
+#include <QStyleFactory>
+#include <iostream>
 #include <csignal>
 
 #ifdef Q_OS_WIN32
@@ -63,8 +71,8 @@
 
 #include "gettext.h"
 
+using namespace std;
 using namespace cnoid;
-using namespace std::placeholders;
 
 namespace {
 
@@ -75,23 +83,22 @@ Signal<void()> sigAboutToQuit_;
 
 void onCtrl_C_Input(int)
 {
-    callLater(std::bind(&MainWindow::close, MainWindow::instance()));
+    callLater([](){ MainWindow::instance()->close(); });
 }
 
 #ifdef Q_OS_WIN32
 BOOL WINAPI consoleCtrlHandler(DWORD ctrlChar)
 {
-    callLater(std::bind(&MainWindow::close, MainWindow::instance()));
+    callLater([](){ MainWindow::instance()->close(); });
     return FALSE;
 }
 #endif
 
 }
 
-
 namespace cnoid {
 
-class AppImpl
+class AppImpl : public AppImplBase
 {
     App* self;
     QApplication* qapplication;
@@ -99,8 +106,9 @@ class AppImpl
     char**& argv;
     ExtensionManager* ext;
     MainWindow* mainWindow;
-    std::string appName;
-    std::string vendorName;
+    MessageView* messageView;
+    string appName;
+    string vendorName;
     DescriptionDialog* descriptionDialog;
     bool doQuit;
     
@@ -111,7 +119,7 @@ class AppImpl
     void onMainWindowCloseEvent();
     void onSigOptionsParsed(boost::program_options::variables_map& v);
     void showInformationDialog();
-    void onOpenGLVSyncToggled(bool on);
+    virtual bool eventFilter(QObject* watched, QEvent* event);
 
     friend class App;
     friend class View;
@@ -125,7 +133,7 @@ App::App(int& argc, char**& argv)
     impl = new AppImpl(this, argc, argv);
 }
 
-#include <iostream>
+
 AppImpl::AppImpl(App* self, int& argc, char**& argv)
     : self(self),
       argc(argc),
@@ -133,22 +141,30 @@ AppImpl::AppImpl(App* self, int& argc, char**& argv)
 {
     descriptionDialog = 0;
 
-#if QT_VERSION < QT_VERSION_CHECK(5, 0, 0)
-#if defined(__APPLE__) && defined(__MACH__)
-    if(!getenv("QT_GRAPHICSSYSTEM")){
-        QApplication::setGraphicsSystem("raster"); // to obtain better rendering performance
-    }
-#endif
-#endif
-
     QCoreApplication::setAttribute(Qt::AA_X11InitThreads);
+
+    // OpenGL settings
+    GLSceneRenderer::initializeClass();
+    QSurfaceFormat format;
+    switch(GLSceneRenderer::rendererType()){
+    case GLSceneRenderer::GLSL_RENDERER:
+        format.setVersion(3, 3);
+        //format.setVersion(4, 4);
+        format.setProfile(QSurfaceFormat::CoreProfile);
+        break;
+    case GLSceneRenderer::GL1_RENDERER:
+    default:
+        format.setVersion(1, 5);
+        break;
+    }
+    QSurfaceFormat::setDefaultFormat(format);
 
     doQuit = false;
 
     qapplication = new QApplication(argc, argv);
 
-    self->connect(qapplication, SIGNAL(focusChanged(QWidget*, QWidget*)),
-                  self, SLOT(onFocusChanged(QWidget*, QWidget*)));
+    connect(qapplication, SIGNAL(focusChanged(QWidget*, QWidget*)),
+            this, SLOT(onFocusChanged(QWidget*, QWidget*)));
 }
 
 
@@ -165,11 +181,7 @@ void AppImpl::initialize( const char* appName, const char* vendorName, const QIc
 
     setlocale(LC_ALL, ""); // for gettext
 
-#if QT_VERSION < QT_VERSION_CHECK(5, 0, 0)
-    QTextCodec::setCodecForCStrings(QTextCodec::codecForLocale());
-#else
     QTextCodec::setCodecForLocale(QTextCodec::codecForName("UTF-8"));
-#endif
     qapplication->setApplicationName(appName);
     qapplication->setOrganizationName(vendorName);
     qapplication->setWindowIcon(icon);
@@ -180,34 +192,31 @@ void AppImpl::initialize( const char* appName, const char* vendorName, const QIc
         AppConfig::archive()->openMapping("pathVariables"));
 
     ext = new ExtensionManager("Base", false);
-#if QT_VERSION >= QT_VERSION_CHECK(5, 0, 0) && CNOID_ENABLE_GETTEXT
+
+#ifdef CNOID_ENABLE_GETTEXT
     setCnoidUtilTextDomainCodeset();
 #endif
 
-    // OpenGL settings
-    Mapping* glConfig = AppConfig::archive()->openMapping("OpenGL");
-    QGLFormat glfmt = QGLFormat::defaultFormat();
-    glfmt.setSwapInterval(glConfig->get("vsync", 0));
-    QGLFormat::setDefaultFormat(glfmt);
-    
     mainWindow = MainWindow::initialize(appName, ext);
-    
+
     ViewManager::initializeClass(ext);
     
     MessageView::initializeClass(ext);
+    messageView = MessageView::instance();
     RootItem::initializeClass(ext);
-    ProjectManager::initialize(ext);
+    ProjectManager::initializeClass(ext);
 
     FileBar::initialize(ext);
     ScriptBar::initialize(ext);
     TimeBar::initialize(ext);
     ItemTreeView::initializeClass(ext);
     ItemPropertyView::initializeClass(ext);
-    TextEditView::initializeClass(ext);
     SceneBar::initialize(ext);
     SceneView::initializeClass(ext);
     ImageViewBar::initialize(ext);
     ImageView::initializeClass(ext);
+    TextEditView::initializeClass(ext);
+    GeneralSliderView::initializeClass(ext);
     GraphBar::initialize(ext);
     MultiValueSeqGraphView::initializeClass(ext);
     MultiSE3SeqGraphView::initializeClass(ext);
@@ -217,6 +226,7 @@ void AppImpl::initialize( const char* appName, const char* vendorName, const QIc
     TimeSyncItemEngineManager::initialize();
     
     FolderItem::initializeClass(ext);
+    SubProjectItem::initializeClass(ext);
     ExtCommandItem::initializeClass(ext);
     MultiValueSeqItem::initializeClass(ext);
     MultiSE3SeqItem::initializeClass(ext);
@@ -225,29 +235,33 @@ void AppImpl::initialize( const char* appName, const char* vendorName, const QIc
     SceneItem::initializeClass(ext);
     PointSetItem::initializeClass(ext);
     MultiPointSetItem::initializeClass(ext);
+    MessageLogItem::initializeClass(ext);
+    LightingItem::initializeClass(ext);
 
     MovieRecorder::initialize(ext);
 
     CaptureBar::initialize(ext);
     
     PathVariableEditor::initialize(ext);
-    
-    ext->menuManager().setPath("/Help").addItem(_("About Choreonoid"))
-        ->sigTriggered().connect(std::bind(&AppImpl::showInformationDialog, this));
 
-    // OpenGL settings
-    Action* vsyncItem = ext->menuManager().setPath("/Options/OpenGL").addCheckItem(_("Vertical Sync"));
-    vsyncItem->setChecked(glfmt.swapInterval() > 0);
-    vsyncItem->sigToggled().connect(std::bind(&AppImpl::onOpenGLVSyncToggled, this, _1));
+    ext->menuManager().setPath("/Help").addItem(_("About Choreonoid"))
+        ->sigTriggered().connect([&](){ showInformationDialog(); });
+
+    messageView->putln(
+        fmt::format(_("The Eigen library version {0}.{1}.{2} is used (SIMD intruction sets in use: {3})."),
+                    EIGEN_WORLD_VERSION, EIGEN_MAJOR_VERSION, EIGEN_MINOR_VERSION,
+                    Eigen::SimdInstructionSetsInUse()));
 
     PluginManager::initialize(ext);
     PluginManager::instance()->doStartupLoading(pluginPathList);
 
-    mainWindow->installEventFilter(self);
+    mainWindow->installEventFilter(this);
 
     OptionManager& om = ext->optionManager();
     om.addOption("quit", "quit the application just after it is invoked");
-    om.sigOptionsParsed().connect(std::bind(&AppImpl::onSigOptionsParsed, this, _1));
+    om.addOption("list-qt-styles", "list all the available qt styles");
+    om.sigOptionsParsed().connect(
+        [&](boost::program_options::variables_map& v){ onSigOptionsParsed(v); });
 
     // Some plugins such as OpenRTM plugin are driven by a library which tries to catch SIGINT.
     // This may block the normal termination by inputting Ctrl+C.
@@ -275,7 +289,7 @@ void AppImpl::initialize( const char* appName, const char* vendorName, const QIc
     /**
        This is now executed in GLVisionSimulatorItem::initializeSimulation
        
-       if(QWidget* textEdit = MessageView::instance()->findChild<QWidget*>("TextEdit")){
+       if(QWidget* textEdit = messageView->findChild<QWidget*>("TextEdit")){
        textEdit->setFocus();
        textEdit->clearFocus();
        }
@@ -320,9 +334,15 @@ int AppImpl::exec()
     int result = 0;
     
     if(doQuit){
-        MessageView::instance()->flush();
+        messageView->flush();
     } else {
         result = qapplication->exec();
+    }
+
+    for(Item* item = RootItem::instance()->childItem(); item; ){
+        Item* next = item->nextItem(); // detachFromParentItem() may deallocate item
+        item->detachFromParentItem();
+        item = next;
     }
 
     PluginManager::finalize();
@@ -334,10 +354,10 @@ int AppImpl::exec()
 }
 
 
-bool App::eventFilter(QObject* watched, QEvent* event)
+bool AppImpl::eventFilter(QObject* watched, QEvent* event)
 {
-    if(watched == impl->mainWindow && event->type() == QEvent::Close){
-        impl->onMainWindowCloseEvent();
+    if(watched == mainWindow && event->type() == QEvent::Close){
+        onMainWindowCloseEvent();
         event->accept();
         return true;
     }
@@ -370,6 +390,9 @@ void AppImpl::onSigOptionsParsed(boost::program_options::variables_map& v)
 {
     if(v.count("quit")){
         doQuit = true;
+    } else if(v.count("list-qt-styles")){
+        cout << QStyleFactory::keys().join(" ").toStdString() << endl;
+        doQuit = true;
     }
 }
     
@@ -395,16 +418,7 @@ void AppImpl::showInformationDialog()
 }
 
 
-void AppImpl::onOpenGLVSyncToggled(bool on)
-{
-    Mapping* glConfig = AppConfig::archive()->openMapping("OpenGL");
-    glConfig->write("vsync", (on ? 1 : 0));
-
-    // show messag dialog to prompt restart here
-}
-
-
-void App::onFocusChanged(QWidget* /* old */, QWidget* now)
+void AppImplBase::onFocusChanged(QWidget* /* old */, QWidget* now)
 {
     while(now){
         View* view = dynamic_cast<View*>(now);

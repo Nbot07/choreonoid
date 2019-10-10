@@ -22,7 +22,9 @@ public:
 
     DyLink();
     DyLink(const Link& link);
-    virtual Link* clone() const;
+    virtual Link* clone() const override;
+
+    virtual void initializeState() override;
 
     DyLink* parent() const { return static_cast<DyLink*>(Link::parent()); }
     DyLink* sibling() const { return static_cast<DyLink*>(Link::sibling()); }
@@ -117,9 +119,8 @@ class CNOID_EXPORT DyBody : public Body
 {
 public:
     DyBody();
-    DyBody(const Body& org);
+    DyBody(const Body& org) = delete;
 
-    virtual Body* clone() const;
     virtual Link* createLink(const Link* org = 0) const;
 
     DyLink* joint(int id) const {
@@ -139,6 +140,9 @@ public:
     }
 
     void calcSpatialForwardKinematics();
+
+protected:
+    virtual Body* doClone(BodyCloneMap* cloneMap) const override;
 };
 
 typedef ref_ptr<DyBody> DyBodyPtr;

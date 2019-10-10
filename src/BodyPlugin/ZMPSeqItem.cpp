@@ -8,47 +8,53 @@
 #include "BodyMotionItem.h"
 #include "BodyMotionEngine.h"
 #include <cnoid/ItemManager>
+#include <fmt/format.h>
 #include "gettext.h"
 
 using namespace std;
 using namespace std::placeholders;
 using namespace cnoid;
-using boost::format;
+using fmt::format;
 
 namespace {
 
-AbstractSeqItem* createZMPSeqItem(AbstractSeqPtr seq)
+AbstractSeqItem* createZMPSeqItem(std::shared_ptr<AbstractSeq> seq)
 {
-    ZMPSeqPtr zmpseq = dynamic_pointer_cast<ZMPSeq>(seq);
-    return zmpseq ? new ZMPSeqItem(zmpseq) : 0;
+    auto zmpseq = dynamic_pointer_cast<ZMPSeq>(seq);
+    if(zmpseq){
+        auto item = new ZMPSeqItem(zmpseq);
+        item->setName("ZMP");
+        return item;
+    }
+    return nullptr;
 }
 
 
 class ZMPSeqEngine : public TimeSyncItemEngine
 {
-    ZMPSeqPtr seq;
+    shared_ptr<ZMPSeq> seq;
     BodyItemPtr bodyItem;
 public:
         
     ZMPSeqEngine(ZMPSeqItem* seqItem, BodyItem* bodyItem)
         : seq(seqItem->zmpseq()), bodyItem(bodyItem)
-        {
-            seqItem->sigUpdated().connect(std::bind(&TimeSyncItemEngine::notifyUpdate, this));
-        }
+    {
+        seqItem->sigUpdated().connect(std::bind(&TimeSyncItemEngine::notifyUpdate, this));
+    }
 
     virtual bool onTimeChanged(double time)
-        {
-            bool isValidTime = false;
-            if(!seq->empty()){
-                const Vector3& zmp = seq->at(seq->clampFrameIndex(seq->frameOfTime(time), isValidTime));
-                if(seq->isRootRelative()){
-                    bodyItem->setZmp(bodyItem->body()->rootLink()->T() * zmp);
-                } else {
-                    bodyItem->setZmp(zmp);
-                }
+    {
+        bool isValidTime = false;
+        if(!seq->empty()){
+            const Vector3& zmp = seq->at(seq->clampFrameIndex(seq->frameOfTime(time), isValidTime));
+            if(seq->isRootRelative()){
+                bodyItem->setZmp(bodyItem->body()->rootLink()->T() * zmp);
+            } else {
+                bodyItem->setZmp(zmp);
             }
-            return isValidTime;
         }
+        return isValidTime;
+    }
 };
 
 
@@ -80,7 +86,7 @@ ZMPSeqItem::ZMPSeqItem()
 }
 
 
-ZMPSeqItem::ZMPSeqItem(ZMPSeqPtr seq)
+ZMPSeqItem::ZMPSeqItem(std::shared_ptr<ZMPSeq> seq)
     : Vector3SeqItem(seq),
       zmpseq_(seq)
 {
@@ -106,16 +112,16 @@ bool ZMPSeqItem::makeRootRelative(bool on)
     BodyMotionItem* bodyMotionItem = dynamic_cast<BodyMotionItem*>(parentItem());
     if(bodyMotionItem){
         if(cnoid::makeRootRelative(*zmpseq_, *bodyMotionItem->motion(), on)){
-            mvout() << (format(_("%1% of %2% has been converted to %3%."))
-                        % name() % bodyMotionItem->name()
-                        % (on ? _("the root relative coordinate") : _("the global coordinate")))
+            mvout() << format(_("{0} of {1} has been converted to {2}."),
+                              name(), bodyMotionItem->name(),
+                              (on ? _("the root relative coordinate") : _("the global coordinate")))
                     << endl;
             return true;
         }
     }
-    mvout() << (format(_("%1%'s coordinate system cannot be changed "
-                         "because there is no root link motion associated with %1%."))
-                % name()) << endl;
+    mvout() << format(_("{0}'s coordinate system cannot be changed "
+                        "because there is no root link motion associated with {0}."),
+                      name()) << endl;
     return false;
 }
 

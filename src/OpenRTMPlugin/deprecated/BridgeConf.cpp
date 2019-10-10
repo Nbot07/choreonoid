@@ -5,25 +5,18 @@
 
 #include "BridgeConf.h"
 #include "../OpenRTMUtil.h"
+#include "../LoggerUtil.h"
 #include <cnoid/Config>
-#include <boost/format.hpp>
-#include <boost/filesystem.hpp>
+#include <cnoid/stdx/filesystem>
+#include <fmt/format.h>
+#include <regex>
 #include <iostream>
 
-#ifdef CNOID_USE_BOOST_REGEX
-#include <boost/regex.hpp>
-using boost::regex;
-using boost::match_results;
-using boost::regex_search;
-namespace regex_constants = boost::regex_constants;
-#else
-#include <regex>
-#endif
-
 using namespace std;
+using namespace cnoid;
 namespace program_options = boost::program_options;
-namespace filesystem = boost::filesystem;
-using boost::format;
+namespace filesystem = cnoid::stdx::filesystem;
+using fmt::format;
 
 
 BridgeConf::BridgeConf() :
@@ -166,10 +159,9 @@ void BridgeConf::parseOptions()
         vector<string> values = vmap["module"].as<vector<string> >();
         for(size_t i=0; i < values.size(); ++i){
             string modulePath( values[i] );
-            if( filesystem::extension(filesystem::path( modulePath )).empty() )
-                {
-                    modulePath += string( SUFFIX_SHARED_EXT );
-                }
+            if(filesystem::path(modulePath).extension().empty()){
+                modulePath += string( SUFFIX_SHARED_EXT );
+            }
             addModuleInfo( modulePath );
         }
     }
@@ -224,7 +216,10 @@ void BridgeConf::setPortInfos(const char* optionLabel, PortInfoMap& portInfos)
         info.portName = parameters[0];
         int j;
         for(j=1; j<3; j++){
-            LabelToDataTypeIdMap::iterator it = labelToDataTypeIdMap.find(parameters[j]);
+					if (parameters.size() <= j) {
+						throw invalid_argument(string("invalid in port setting"));
+					}
+					LabelToDataTypeIdMap::iterator it = labelToDataTypeIdMap.find(parameters[j]);
             if(it == labelToDataTypeIdMap.end() ){ // Handle as identification name because it is not a property name
                 if(j==2)    // Error because there is no property name by the third
                     throw invalid_argument(string("invalid data type"));
@@ -324,7 +319,7 @@ void BridgeConf::addModuleInfo(const std::string& value)
     } else {
         ModuleInfo info;
         info.fileName = parameters[0];
-        info.componentName = filesystem::basename(filesystem::path(info.fileName));
+        info.componentName = filesystem::path(info.fileName).stem().string();
         if(parameters.size() == 1){
             info.initFuncName = info.componentName + "Init";
         } else {
@@ -347,16 +342,20 @@ void BridgeConf::addTimeRateInfo(const std::string& value)
     }
 }
 
-void BridgeConf::setupModules()
-{
+void BridgeConf::setupModules() {
+  DDEBUG("BridgeConf::setupModules");
     RTC::Manager& rtcManager = RTC::Manager::instance();
     ModuleInfoList::iterator moduleInfo = moduleInfoList.begin();
-    format param("%1%?exec_cxt.periodic.type=ChoreonoidExecutionContext&exec_cxt.periodic.rate=1000000");
+#if defined(OPENRTM_VERSION11)
+    string param("{}?exec_cxt.periodic.type=ChoreonoidExecutionContext&exec_cxt.periodic.rate=1000000");
+#elif defined(OPENRTM_VERSION12)
+    string param("{}?execution_contexts=ChoreonoidExecutionContext(),OpenHRPExecutionContext()&exec_cxt.periodic.type=ChoreonoidExecutionContext&exec_cxt.periodic.rate=1000000&exec_cxt.sync_activation=NO&exec_cxt.sync_deactivation=NO");
+#endif
     while(moduleInfo != moduleInfoList.end()){
         if(!moduleInfo->isLoaded){
             rtcManager.load(moduleInfo->fileName.c_str(), moduleInfo->initFuncName.c_str());
             moduleInfo->isLoaded = true;
-            moduleInfo->rtcServant = cnoid::createManagedRTC(str(param % moduleInfo->componentName).c_str());
+            moduleInfo->rtcServant = cnoid::createManagedRTC(format(param, moduleInfo->componentName));
         }
         ++moduleInfo;
     }

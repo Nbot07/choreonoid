@@ -10,6 +10,7 @@
 #include <cnoid/Signal>
 #include <functional>
 #include <vector>
+#include <string>
 #include "exportdecl.h"
 
 namespace cnoid {
@@ -100,6 +101,8 @@ public:
 
     TaskCommand* setLevel(int level) { level_ = level; return this; }
     int level() const { return level_; }
+
+    TaskCommand* linkToNextTask();
 
 private:
     std::string caption_;

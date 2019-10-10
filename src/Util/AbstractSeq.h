@@ -10,6 +10,7 @@
 #include <string>
 #include <vector>
 #include <memory>
+#include <functional>
 #include "exportdecl.h"
 
 namespace cnoid {
@@ -17,10 +18,6 @@ namespace cnoid {
 class Mapping;
 class YAMLWriter;
     
-class AbstractSeq;
-typedef std::shared_ptr<AbstractSeq> AbstractSeqPtr;
-
-
 class CNOID_EXPORT AbstractSeq
 {
 protected:
@@ -32,7 +29,7 @@ public:
 
     virtual AbstractSeq& operator=(const AbstractSeq& rhs);
 
-    virtual AbstractSeqPtr cloneSeq() const = 0;
+    virtual std::shared_ptr<AbstractSeq> cloneSeq() const = 0;
 
     void copySeqProperties(const AbstractSeq& source);
 
@@ -73,9 +70,7 @@ public:
         return contentName_;
     }
 
-    virtual void setSeqContentName(const std::string& name) {
-        this->contentName_ = name;
-    }
+    virtual void setSeqContentName(const std::string& name);
 
     bool readSeq(const Mapping* archive, std::ostream& os = nullout());
     bool writeSeq(YAMLWriter& writer);
@@ -84,10 +79,10 @@ public:
     const std::string& seqMessage() const;
 
 protected:
+    void setSeqType(const std::string& type);
+    
     virtual bool doReadSeq(const Mapping* archive, std::ostream& os);
-    virtual bool doWriteSeq(YAMLWriter& writer);
-
-    bool writeSeqHeaders(YAMLWriter& writer);
+    virtual bool doWriteSeq(YAMLWriter& writer, std::function<void()> additionalPartCallback);
 
     //! deprecated. Use the os parameter of readSeq to get messages in reading
     void clearSeqMessage() { }
@@ -111,7 +106,7 @@ public:
     using AbstractSeq::operator=;
     AbstractMultiSeq& operator=(const AbstractMultiSeq& rhs);
 
-    virtual AbstractSeqPtr cloneSeq() const = 0;
+    virtual std::shared_ptr<AbstractSeq> cloneSeq() const = 0;
 
     void copySeqProperties(const AbstractMultiSeq& source);
 
@@ -124,13 +119,15 @@ public:
     virtual const std::string& partLabel(int partIndex) const;
 
 protected:
-    virtual bool doWriteSeq(YAMLWriter& writer);
- 
+    virtual bool doWriteSeq(YAMLWriter& writer, std::function<void()> additionalPartCallback);
     std::vector<std::string> readSeqPartLabels(const Mapping& archive);
     bool writeSeqPartLabels(YAMLWriter& writer);
 };
 
+#ifdef CNOID_BACKWARD_COMPATIBILITY
+typedef std::shared_ptr<AbstractSeq> AbstractSeqPtr;
 typedef std::shared_ptr<AbstractMultiSeq> AbstractMultiSeqPtr;
+#endif
 
 }
 

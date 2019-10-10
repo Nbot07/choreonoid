@@ -6,12 +6,13 @@
 #define CNOID_BASE_SCENE_WIDGET_H
 
 #include <cnoid/SceneGraph>
-#include <QWidget>
+#include <cnoid/Widget>
 #include <QBoxLayout>
 #include "exportdecl.h"
 
 namespace cnoid {
 
+class ExtensionManager;
 class SceneWidgetImpl;
 class SceneRenderer;
 class Archive;
@@ -22,9 +23,10 @@ class SceneWidgetRoot;
 class Menu;
 class InteractiveCameraTransform;
 
-class CNOID_EXPORT SceneWidget : public QWidget
+class CNOID_EXPORT SceneWidget : public Widget
 {
 public:
+    static void initializeClass(ExtensionManager* ext);
     static SignalProxy<void(SceneWidget*)> sigSceneWidgetCreated();
 
     SceneWidget();
@@ -37,12 +39,15 @@ public:
 
     SceneRenderer* renderer();
 
+    void draw();
+
     SignalProxy<void()> sigStateChanged() const;
 
     void setEditMode(bool on);
     bool isEditMode() const;
 
     const SceneWidgetEvent& latestEvent() const;
+    Vector3 lastClickedPoint() const;
 
     enum ViewpointControlMode { THIRD_PERSON_MODE, FIRST_PERSON_MODE  };
     void setViewpointControlMode(ViewpointControlMode mode);
@@ -52,6 +57,7 @@ public:
     SgPerspectiveCamera* builtinPerspectiveCamera() const;
     SgOrthographicCamera* builtinOrthographicCamera() const;
     bool isBuiltinCameraCurrent() const;
+    bool isBuiltinCamera(SgCamera* camera) const;
     InteractiveCameraTransform* findOwnerInteractiveCameraTransform(int cameraIndex);
 
     void startBuiltinCameraViewChange(const Vector3& center);
@@ -87,7 +93,6 @@ public:
     void setCoordinateAxes(bool on);
     void setShowFPS(bool on);
     void setNewDisplayListDoubleRenderingEnabled(bool on);
-    void setUseBufferForPicking(bool on);
        
     void setBackgroundColor(const Vector3& color);
     Vector3 backgroundColor();

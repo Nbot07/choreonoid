@@ -109,7 +109,7 @@ public:
     vector<dJointFeedback> forceSensorFeedbacks;
     BasicSensorSimulationHelper sensorHelper;
         
-    ODEBody(const Body& orgBody);
+    ODEBody(Body* body);
     ~ODEBody();
     void createBody(ODESimulatorItemImpl* simImpl);
     void setExtraJoints(bool flipYZ);
@@ -371,7 +371,7 @@ void ODELink::addMesh(MeshExtractor* extractor, ODEBody* odeBody)
     if(mesh->primitiveType() != SgMesh::MESH){
         bool doAddPrimitive = false;
         Vector3 scale;
-        boost::optional<Vector3> translation;
+        stdx::optional<Vector3> translation;
         if(!extractor->isCurrentScaled()){
             scale.setOnes();
             doAddPrimitive = true;
@@ -626,21 +626,21 @@ void ODELink::setTorqueToODE()
 void ODELink::setVelocityToODE()
 {
     if(link->isRotationalJoint()){
-    	dReal v = link->dq();
+    	dReal v = link->dq_target();
     	if(!USE_AMOTOR){
     		dJointSetHingeParam(jointID, dParamVel, v);
         } else {
     		dJointSetAMotorParam(motorID, dParamVel, v);
         }
     } else if(link->isSlideJoint()){
-    	dReal v = link->dq();
+    	dReal v = link->dq_target();
     	dJointSetSliderParam(jointID, dParamVel, v);
     }
 }
 
 
-ODEBody::ODEBody(const Body& orgBody)
-    : SimulationBody(new Body(orgBody))
+ODEBody::ODEBody(Body* body)
+    : SimulationBody(body)
 {
     worldID = 0;
     spaceID = 0;
@@ -1058,7 +1058,7 @@ Item* ODESimulatorItem::doDuplicate() const
 
 SimulationBody* ODESimulatorItem::createSimulationBody(Body* orgBody)
 {
-    return new ODEBody(*orgBody);
+    return new ODEBody(orgBody->clone());
 }
 
 
@@ -1131,6 +1131,8 @@ void ODESimulatorItemImpl::addBody(ODEBody* odeBody)
         joint->u() = 0.0;
         joint->dq() = 0.0;
         joint->ddq() = 0.0;
+        joint->q_target() = joint->q();
+        joint->dq_target() = joint->dq();
     }
     
     body.clearExternalForces();
@@ -1210,7 +1212,7 @@ static void nearCallback(void* data, dGeomID g1, dGeomID g2)
                         //Vector3 pos(dpos[0], dpos[1], dpos[2]);
                         //Vector3 v = crawlerlink->v + crawlerlink->w.cross(pos-crawlerlink->p);
                         //surface.motion1 = dir.dot(v) + crawlerlink->u;
-                        surface.motion1 = crawlerlink->dq();
+                        surface.motion1 = crawlerlink->dq_target();
                         surface.mu = impl->friction;
                         surface.mu2 = 0.5;
                     }

@@ -3,7 +3,7 @@
 */
 
 #include "ControllerIO.h"
-#include <boost/tokenizer.hpp>
+#include <cnoid/Tokenizer>
 #include <iostream>
 
 using namespace std;
@@ -22,22 +22,28 @@ std::string ControllerIO::optionString() const
 }
 
 
+std::string ControllerIO::getIntegratedOptionString(const std::string& opt1, const std::string& opt2) const
+{
+    if(!opt1.empty()){
+        if(opt2.empty()){
+            return opt1;
+        } else {
+            return opt1 + " " + opt2;
+        }
+    }
+    return opt2;
+}
+
+
 std::vector<std::string> ControllerIO::options() const
 {
-    typedef boost::escaped_list_separator<char> separator;
-    separator sep('\\', ' ');
-
-    std::string s = optionString();
-    boost::tokenizer<separator> tok(s, sep);
-
     std::vector<std::string> options;
-    for(boost::tokenizer<separator>::iterator p = tok.begin(); p != tok.end(); ++p){
-        const string& token = *p;
+    auto s = optionString();
+    for(auto& token : Tokenizer<EscapedListSeparator<char>>(s, EscapedListSeparator<char>('\\', ' '))){
         if(!token.empty()){
             options.push_back(token);
         }
     }
-
     return options;
 }
 

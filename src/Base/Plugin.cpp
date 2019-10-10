@@ -7,7 +7,6 @@
 #include "ToolBar.h"
 #include "View.h"
 #include "Licenses.h"
-#include <boost/variant.hpp>
 
 using namespace std;
 using namespace cnoid;
@@ -167,6 +166,12 @@ int Plugin::numOldNames() const
 const char* Plugin::description() const
 {
     return "";
+}
+
+
+const char* Plugin::MITLicenseText()
+{
+    return cnoid::MITLicenseText();
 }
 
 

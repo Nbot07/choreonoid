@@ -30,7 +30,7 @@ class PA10PickupController : public SimpleController
     Link* ioRightHand;
     BodyPtr ikBody;
     Link* ikWrist;
-    JointPathPtr baseToWrist;
+    shared_ptr<JointPath> baseToWrist;
     VectorXd qref, qold, qref_old;
     Interpolator<VectorXd> wristInterpolator;
     Interpolator<VectorXd> jointInterpolator;
@@ -56,7 +56,7 @@ public:
         ikBody = ioBody->clone();
         ikWrist = ikBody->link("J7");
         Link* base = ikBody->rootLink();
-        baseToWrist = getCustomJointPath(ikBody, base, ikWrist);
+        baseToWrist = JointPath::getCustomPath(ikBody, base, ikWrist);
         base->p().setZero();
         base->R().setIdentity();
 

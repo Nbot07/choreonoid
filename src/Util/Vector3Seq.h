@@ -24,7 +24,7 @@ public:
     virtual ~Vector3Seq();
 
     using BaseSeqType::operator=;
-    virtual AbstractSeqPtr cloneSeq() const;
+    virtual std::shared_ptr<AbstractSeq> cloneSeq() const;
         
     bool loadPlainFormat(const std::string& filename, std::ostream& os = nullout());
     bool saveAsPlainFormat(const std::string& filename, std::ostream& os = nullout());
@@ -32,12 +32,13 @@ public:
 protected:
     virtual Vector3 defaultValue() const override;
     virtual bool doReadSeq(const Mapping* archive, std::ostream& os) override;
-    virtual bool doWriteSeq(YAMLWriter& writer) override;
-    bool writeVector3SeqHeaders(YAMLWriter& writer);
-    bool writeVector3SeqFrames(YAMLWriter& writer);
+    virtual bool doWriteSeq(YAMLWriter& writer, std::function<void()> writeAdditionalPart) override;
 };
 
+#ifdef CNOID_BACKWARD_COMPATIBILITY
 typedef std::shared_ptr<Vector3Seq> Vector3SeqPtr;
+#endif
+
 }
 
 #endif

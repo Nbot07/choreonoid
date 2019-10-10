@@ -8,12 +8,13 @@
 #include "ValueTree.h"
 #include "YAMLWriter.h"
 #include "GeneralSeqReader.h"
+#include <fmt/format.h>
 #include <fstream>
 #include "gettext.h"
 
 using namespace std;
 using namespace cnoid;
-using boost::format;
+using fmt::format;
 
 
 MultiValueSeq::MultiValueSeq()
@@ -37,7 +38,7 @@ MultiValueSeq::MultiValueSeq(const MultiValueSeq& org)
 }
 
 
-AbstractSeqPtr MultiValueSeq::cloneSeq() const
+std::shared_ptr<AbstractSeq> MultiValueSeq::cloneSeq() const
 {
     return std::make_shared<MultiValueSeq>(*this);
 }
@@ -58,26 +59,27 @@ bool MultiValueSeq::doReadSeq(const Mapping* archive, std::ostream& os)
 }
     
 
-bool MultiValueSeq::doWriteSeq(YAMLWriter& writer)
+bool MultiValueSeq::doWriteSeq(YAMLWriter& writer, std::function<void()> additionalPartCallback)
 {
-    if(!writeSeqHeaders(writer)){
-        return false;
-    }
-
-    writer.putKey("frames");
-    writer.startListing();
-    const int n = numFrames();
-    const int m = numParts();
-    for(int i=0; i < n; ++i){
-        writer.startFlowStyleListing();
-        Frame v = frame(i);
-        for(int j=0; j < m; ++j){
-            writer.putScalar(v[j]);
-        }
-        writer.endListing();
-    }
-    writer.endListing();
-    return true;
+    return BaseSeqType::doWriteSeq(
+        writer,
+        [&](){
+            if(additionalPartCallback) additionalPartCallback();
+            
+            writer.putKey("frames");
+            writer.startListing();
+            const int n = numFrames();
+            const int m = numParts();
+            for(int i=0; i < n; ++i){
+                writer.startFlowStyleListing();
+                Frame v = frame(i);
+                for(int j=0; j < m; ++j){
+                    writer.putScalar(v[j]);
+                }
+                writer.endListing();
+            }
+            writer.endListing();
+        });
 }
 
 
@@ -107,7 +109,7 @@ bool MultiValueSeq::saveAsPlainFormat(const std::string& filename, std::ostream&
     file.setf(ios::fixed);
 
     if(!file){
-        os << format(_("\"%1%\" cannot be opened.")) % filename << endl;
+        os << format(_("\"{}\" cannot be opened."), filename) << endl;
         return false;
     }
 

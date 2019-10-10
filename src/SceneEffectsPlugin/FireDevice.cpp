@@ -8,74 +8,64 @@
 #include <cnoid/YAMLBodyLoader>
 #include <cnoid/SceneDevice>
 #include <cnoid/EigenArchive>
+#include <cnoid/Body>
 
 using namespace std;
 using namespace cnoid;
 
 namespace {
 
-bool readFireDevice(YAMLBodyLoader& loader, Mapping& node)
-{
-    FireDevicePtr fire = new FireDevice;
-    Vector3f a;
-    if(read(node, "acceleration", a)) fire->setAcceleration(a);
-    double v;
-    if(node.read("initialSpeedAverage", v)) fire->setInitialSpeedAverage(v);
-    if(node.read("initialSpeedVariation", v)) fire->setInitialSpeedVariation(v);
-    if(loader.readAngle(node, "initialVelocityAngleRange", v)) fire->setInitialVelocityAngleRange(v);
-    return loader.readDevice(fire, node);
-}
+YAMLBodyLoader::NodeTypeRegistration
+registerFireDevice(
+    "FireDevice",
+    [](YAMLBodyLoader& loader, Mapping& node){
+        FireDevicePtr fire = new FireDevice;
+        fire->particleSystem().readParameters(loader.sceneReader(), node);
+        return loader.readDevice(fire, node);
+    });
 
+SceneDevice::FactoryRegistration<FireDevice>
+registerSceneFireDeviceFactory(
+    [](Device* device){
+        auto fireDevice = static_cast<FireDevice*>(device);
+        auto sceneFire = new SceneFire;
+        auto sceneDevice = new SceneDevice(fireDevice, sceneFire);
 
-SceneDevice* createSceneFireDevice(Device* device)
-{
-    auto fire = static_cast<FireDevice*>(device);
-    auto scene = new SceneFire;
-    auto sceneDevice = new SceneDevice(fire, scene);
+        sceneDevice->setFunctionOnStateChanged(
+            [sceneFire, fireDevice](){
+                sceneFire->particleSystem() = fireDevice->particleSystem();
+                sceneFire->notifyUpdate();
+            });
 
-    sceneDevice->setFunctionOnStateChanged(
-        [scene, fire](){
-            scene->setAcceleration(fire->acceleration());
-            scene->setInitialSpeedAverage(fire->initialSpeedAverage());
-            scene->setInitialSpeedVariation(fire->initialSpeedVariation());
-            scene->setInitialVelocityAngleRange(fire->initialVelocityAngleRange());
-            scene->notifyUpdate();
-        });
-
-    sceneDevice->setFunctionOnTimeChanged(
-        [scene](double time){
-            scene->setTime(time);
-            scene->notifyUpdate();
-        });
+        sceneDevice->setFunctionOnTimeChanged(
+            [sceneFire](double time){
+                sceneFire->setTime(time);
+                sceneFire->notifyUpdate();
+            });
             
-    return sceneDevice;
-}
-                        
-struct TypeRegistration
-{
-    TypeRegistration() {
-        YAMLBodyLoader::addNodeType("FireDevice", readFireDevice);
-        SceneDevice::registerSceneDeviceFactory<FireDevice>(createSceneFireDevice);
-    }
-} registration;
+        return sceneDevice;
+    });
 
 }
 
 
 FireDevice::FireDevice()
 {
-    on_ = true;
-    acceleration_ << 0.0f, 0.0f, 0.1f;
-    initialSpeedAverage_ = 0.15f;
-    initialSpeedVariation_ = 0.1f;
-    initialVelocityAngleRange_ = PI / 3.0f;
+    particleSystem_.setLifeTime(5.0f);
+    particleSystem_.setAcceleration(Vector3f(0.0f, 0.0f, 0.05f));
+    particleSystem_.setNumParticles(200);
+    particleSystem_.setParticleSize(0.25f);
+    particleSystem_.setEmissionRange(PI / 2.0);
+    particleSystem_.setInitialSpeedAverage(0.1f);
+    particleSystem_.setInitialSpeedVariation(0.1f);
 }
 
 
 FireDevice::FireDevice(const FireDevice& org, bool copyStateOnly)
-    : Device(org, copyStateOnly)
+    : Device(org, copyStateOnly),
+      particleSystem_(org.particleSystem_)
 {
-    copyStateFrom(org);
+
 }
 
 
@@ -87,11 +77,7 @@ const char* FireDevice::typeName()
 
 void FireDevice::copyStateFrom(const FireDevice& other)
 {
-    on_ = other.on_;
-    acceleration_ = other.acceleration_;
-    initialSpeedAverage_ = other.initialSpeedAverage_;
-    initialSpeedVariation_ = other.initialSpeedVariation_;
-    initialVelocityAngleRange_ = other.initialVelocityAngleRange_;
+    particleSystem_ = other.particleSystem_;
 }
 
 
@@ -106,11 +92,11 @@ void FireDevice::copyStateFrom(const DeviceState& other)
 
 DeviceState* FireDevice::cloneState() const
 {
-    return new FireDevice(*this, false);
+    return new FireDevice(*this, true);
 }
 
 
-Device* FireDevice::clone() const
+Device* FireDevice::doClone(BodyCloneMap*) const
 {
     return new FireDevice(*this);
 }
@@ -124,33 +110,65 @@ void FireDevice::forEachActualType(std::function<bool(const std::type_info& type
 }
 
 
+bool FireDevice::on() const
+{
+    return particleSystem_.on();
+}
+
+
+void FireDevice::on(bool on)
+{
+    if(on && !particleSystem_.on()){
+        if(link()){
+            particleSystem_.setOffsetTime(-link()->body()->currentTime());
+        }
+    }
+    particleSystem_.on(on);
+}
+
+
 int FireDevice::stateSize() const
 {
-    return 7;
+    return 11;
 }
 
 
 const double* FireDevice::readState(const double* buf)
 {
-    on_ = buf[0];
-    acceleration_[0] = buf[1];
-    acceleration_[1] = buf[2];
-    acceleration_[2] = buf[3];
-    initialSpeedAverage_ = buf[4];
-    initialSpeedVariation_ = buf[5];
-    initialVelocityAngleRange_ = buf[6];
-    return buf + 7;
+    int i = 0;
+    auto& ps = particleSystem_;
+
+    ps.on(buf[i++]);
+    ps.setOffsetTime(buf[i++]);
+    ps.setLifeTime(buf[i++]);
+    ps.setNumParticles(buf[i++]);
+    ps.setParticleSize(buf[i++]);
+    ps.setInitialSpeedAverage(buf[i++]);
+    ps.setInitialSpeedVariation(buf[i++]);
+    ps.setEmissionRange(buf[i++]);
+    ps.setAcceleration(Vector3f(buf[i], buf[i+1], buf[i+2]));
+    i += 3;
+    
+    return buf + i;
 }
 
 
 double* FireDevice::writeState(double* out_buf) const
 {
-    out_buf[0] = on_ ? 1.0 : 0.0;
-    out_buf[1] = acceleration_[0];
-    out_buf[2] = acceleration_[1];
-    out_buf[3] = acceleration_[2];
-    out_buf[4] = initialSpeedAverage_;
-    out_buf[5] = initialSpeedVariation_;
-    out_buf[6] = initialVelocityAngleRange_;
-    return out_buf + 7;
+    int i = 0;
+    auto& ps = particleSystem_;
+    
+    out_buf[i++] = ps.on() ? 1.0 : 0.0;
+    out_buf[i++] = ps.offsetTime();
+    out_buf[i++] = ps.lifeTime();
+    out_buf[i++] = ps.numParticles();
+    out_buf[i++] = ps.particleSize();
+    out_buf[i++] = ps.initialSpeedAverage();
+    out_buf[i++] = ps.initialSpeedVariation();
+    out_buf[i++] = ps.emissionRange();
+    out_buf[i++] = ps.acceleration()[0];
+    out_buf[i++] = ps.acceleration()[1];
+    out_buf[i++] = ps.acceleration()[2];
+
+    return out_buf + i;
 }

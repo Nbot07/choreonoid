@@ -11,18 +11,13 @@
 #include <cnoid/FileUtil>
 #include <cnoid/UTF8>
 #include <QRegExp>
-#include <boost/algorithm/string.hpp>
-#include <boost/lexical_cast.hpp>
-#include <boost/tokenizer.hpp>
 #include <map>
-#include <iostream>
 #include <cstdlib>
 #include "gettext.h"
 
 using namespace std;
 using namespace cnoid;
-using namespace std::placeholders;
-namespace filesystem = boost::filesystem;
+namespace filesystem = cnoid::stdx::filesystem;
 
 namespace {
 
@@ -34,6 +29,11 @@ typedef map<View*, int> ViewToIdMap;
 typedef map<int, View*> IdToViewMap;
 
 typedef list< std::function<void()> > PostProcessList;
+
+void putWarning(const QString& message)
+{
+    MessageView::instance()->putln(MessageView::WARNING, message);
+}
 
 }
 
@@ -92,24 +92,34 @@ bool findSubDirectoryOfDirectoryVariable
 }
 
 
-void replaceDirectoryVariable(ArchiveSharedData* shared, QString& io_pathString, const QString& varname, int pos, int len)
+bool replaceDirectoryVariable(ArchiveSharedData* shared, QString& io_pathString, const QString& varname, int pos, int len)
 {
     Listing* paths = shared->directoryVariableMap->findListing(varname.toStdString());
-    if(paths){
+
+    if(!paths->isValid()){
+        putWarning(QString(_("${%1} of \"%2\" is not defined.")).arg(varname).arg(io_pathString));
+        return false;
+    }
+
+    if(paths->size() == 1){
+        io_pathString.replace(pos, len, paths->at(0)->toString().c_str());
+        return true;
+
+    } else {
+        QString replaced;
         for(int i=0; i < paths->size(); ++i){
-            string vpath;
-            QString replaced(io_pathString);
+            replaced = io_pathString;
             replaced.replace(pos, len, paths->at(i)->toString().c_str());
             filesystem::file_status fstatus = filesystem::status(filesystem::path(replaced.toStdString()));
             if(filesystem::is_directory(fstatus) || filesystem::exists(fstatus)) {
                 io_pathString = replaced;
-                return;
+                return true;
             }
         }
+        putWarning(QString(_("\"%1\" does not exist.")).arg(io_pathString));
     }
-    MessageView::mainInstance()->putln(
-        MessageView::WARNING,
-        QString(_("${%1} of \"%2\" cannot be expanded !")).arg(varname).arg(io_pathString));
+
+    return false;
 }
 
 }
@@ -132,7 +142,7 @@ Archive::Archive()
 Archive::Archive(int line, int column)
     : Mapping(line, column)
 {
-
+    
 }
 
 
@@ -145,13 +155,13 @@ Archive::~Archive()
 void Archive::initSharedInfo(bool useHomeRelativeDirectories)
 {
     shared = new ArchiveSharedData;
-
+    
     shared->topDirPath = executableTopDirectory();
     shared->shareDirPath = shareDirectory();
 
     shared->topDirString = executableTopDirectory().c_str();
     shared->shareDirString = shareDirectory().c_str();
-
+    
     char* home = getenv("HOME");
     if(home){
         if(useHomeRelativeDirectories){
@@ -162,16 +172,16 @@ void Archive::initSharedInfo(bool useHomeRelativeDirectories)
     
     shared->currentParentItem = 0;
 }    
-    
+
 
 void Archive::initSharedInfo(const std::string& projectFile, bool useHomeRelativeDirectories)
 {
     initSharedInfo(useHomeRelativeDirectories);
     
     shared->directoryVariableMap = AppConfig::archive()->openMapping("pathVariables");
-
+    
     shared->projectDirPath = projectDirPath = getAbsolutePath(filesystem::path(projectFile)).parent_path();
-
+    
     shared->projectDirString = shared->projectDirPath.string().c_str();
 }
 
@@ -189,7 +199,7 @@ void Archive::addPostProcess(const std::function<void()>& func, int priority) co
             shared->postProcesses.push_back(func);
         } else {
             shared->postProcesses.push_back(
-                std::bind(&Archive::addPostProcess, this, func, priority - 1));
+                [this, func, priority](){ addPostProcess(func, priority - 1); });
         }
     }
 }
@@ -279,7 +289,9 @@ std::string Archive::expandPathVariables(const std::string& path) const
             } else if (varname == "PROJECT_DIR"){
                 qpath.replace(pos, len, shared->projectDirString);
             } else {
-                replaceDirectoryVariable(shared, qpath, varname, pos, len);
+                if(!replaceDirectoryVariable(shared, qpath, varname, pos, len)){
+                    qpath.clear();
+                }
             }
         }
     }
@@ -290,7 +302,13 @@ std::string Archive::expandPathVariables(const std::string& path) const
 
 std::string Archive::resolveRelocatablePath(const std::string& relocatable) const
 {
-    filesystem::path path(expandPathVariables(relocatable));
+    string expanded = expandPathVariables(relocatable);
+
+    if(expanded.empty()){
+        return relocatable;
+    }
+    
+    filesystem::path path(expanded);
 
     if(checkAbsolute(path)){
         return getNativePathString(path);
@@ -317,6 +335,19 @@ bool Archive::readRelocatablePath(const std::string& key, std::string& out_value
 }
 
 
+bool Archive::loadItemFile(Item* item, const std::string& fileNameKey, const std::string& fileFormatKey) const
+{
+    string filename, format;
+    if(readRelocatablePath(fileNameKey, filename)){
+        if(!fileFormatKey.empty()){
+            read(fileFormatKey, format);
+        }
+        return item->load(filename, currentParentItem(), format);
+    }
+    return false;
+}
+            
+
 /**
    \todo Use integated nested map whose node is a single path element to be more efficient.
 */
@@ -327,7 +358,7 @@ std::string Archive::getRelocatablePath(const std::string& orgPathString) const
     string varName;
 
     // In the case where the path is originally relative one
-    if(!orgPath.is_complete()){
+    if(!orgPath.is_absolute()){
         return getGenericPathString(orgPath);
 
     } else if(findSubDirectory(shared->projectDirPath, orgPath, relativePath)){
@@ -403,7 +434,7 @@ ValueNodePtr Archive::getItemId(Item* item) const
             }
         }
     }
-    return 0;
+    return nullptr;
 }
 
 
@@ -426,7 +457,7 @@ Item* Archive::findItem(int id) const
             return p->second;
         }
     }
-    return 0;
+    return nullptr;
 }
 
 
@@ -489,7 +520,7 @@ View* Archive::findView(int id) const
             return p->second;
         }
     }
-    return 0;
+    return nullptr;
 }
 
 
@@ -498,7 +529,7 @@ Item* Archive::currentParentItem() const
     if(shared){
         return shared->currentParentItem;
     }
-    return 0;
+    return nullptr;
 }
 
 

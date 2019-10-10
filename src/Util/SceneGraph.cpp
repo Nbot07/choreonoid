@@ -18,51 +18,21 @@ SgUpdate::~SgUpdate()
 
 }
 
-namespace {
-typedef std::unordered_map<const SgObject*, SgObjectPtr> CloneMap;
-}
-
-namespace cnoid {
-class SgCloneMapImpl : public CloneMap { };
-}
-
 
 SgCloneMap::SgCloneMap()
+    : CloneMap(
+        [this](const Referenced* org) -> Referenced* {
+            return static_cast<const SgObject*>(org)->doClone(this);
+        })
 {
-    cloneMap = new SgCloneMapImpl;
     isNonNodeCloningEnabled_ = true;
 }
 
 
 SgCloneMap::SgCloneMap(const SgCloneMap& org)
+    : CloneMap(org)
 {
-    cloneMap = new SgCloneMapImpl(*org.cloneMap);
     isNonNodeCloningEnabled_ = org.isNonNodeCloningEnabled_;
-}
-
-
-void SgCloneMap::clear()
-{
-    cloneMap->clear();
-}
-
-
-SgObject* SgCloneMap::findOrCreateClone(const SgObject* org)
-{
-    CloneMap::iterator p = cloneMap->find(org);
-    if(p == cloneMap->end()){
-        SgObject* clone = org->clone(*this);
-        (*cloneMap)[org] = clone;
-        return clone;
-    } else {
-        return p->second.get();
-    }
-}
-
-
-SgCloneMap::~SgCloneMap()
-{
-    delete cloneMap;
 }
 
 
@@ -79,7 +49,7 @@ SgObject::SgObject(const SgObject& org)
 }
 
 
-SgObject* SgObject::clone(SgCloneMap&) const
+SgObject* SgObject::doClone(SgCloneMap*) const
 {
     return new SgObject(*this);
 }
@@ -93,7 +63,7 @@ int SgObject::numChildObjects() const
 
 SgObject* SgObject::childObject(int /* index */)
 {
-    return 0;
+    return nullptr;
 }
 
 
@@ -218,7 +188,7 @@ SgNode::~SgNode()
 }
 
 
-SgObject* SgNode::clone(SgCloneMap&) const
+SgObject* SgNode::doClone(SgCloneMap*) const
 {
     return new SgNode(*this);
 }
@@ -237,6 +207,50 @@ bool SgNode::isGroup() const
 }
 
 
+/**
+   \note The current implementation of this function does not seem to return the correct T value
+*/
+static bool findNodeSub(SgNode* node, const std::string& name, SgNodePath& path, Affine3 T, Affine3& out_T)
+{
+    path.push_back(node);
+
+    if(auto group = dynamic_cast<SgGroup*>(node)){
+        if(auto transform = dynamic_cast<SgTransform*>(group)){
+            Affine3 T0;
+            transform->getTransform(T0);
+            T = T * T0;
+        }
+        if(node->name() == name){
+            out_T = T;
+            return true;
+        }
+        for(auto& child : *group){
+            if(findNodeSub(child, name, path, T, out_T)){
+                return true;
+            }
+        }
+    } else {
+        if(node->name() == name){
+            out_T = T;
+            return true;
+        }
+    }
+    
+    path.pop_back();
+
+    return false;
+}
+
+
+SgNodePath SgNode::findNode(const std::string& name, Affine3& out_T)
+{
+    SgNodePath path;
+    out_T.setIdentity();
+    findNodeSub(this, name, path, out_T, out_T);
+    return path;
+}
+
+
 SgGroup::SgGroup()
     : SgNode(findPolymorphicId<SgGroup>())
 {
@@ -251,28 +265,21 @@ SgGroup::SgGroup(int polymorhicId)
 }
 
 
-SgGroup::SgGroup(const SgGroup& org)
+SgGroup::SgGroup(const SgGroup& org, SgCloneMap* cloneMap)
     : SgNode(org)
 {
     children.reserve(org.numChildren());
 
-    // shallow copy
-    for(const_iterator p = org.begin(); p != org.end(); ++p){
-        addChild(*p, false);
-    }
-
-    isBboxCacheValid = true;
-    bboxCache = org.bboxCache;
-}
-
-
-SgGroup::SgGroup(const SgGroup& org, SgCloneMap& cloneMap)
-    : SgNode(org)
-{
-    children.reserve(org.numChildren());
-
-    for(const_iterator p = org.begin(); p != org.end(); ++p){
-        addChild(cloneMap.getClone<SgNode>(p->get()), false);
+    if(cloneMap){
+        // deep copy
+        for(auto& child : org){
+            addChild(cloneMap->getClone<SgNode>(child), false);
+        }
+    } else {
+        // shallow copy
+        for(auto& child : org){
+            addChild(child, false);
+        }
     }
 
     isBboxCacheValid = true;
@@ -288,7 +295,7 @@ SgGroup::~SgGroup()
 }
 
 
-SgObject* SgGroup::clone(SgCloneMap& cloneMap) const
+SgObject* SgGroup::doClone(SgCloneMap* cloneMap) const
 {
     return new SgGroup(*this, cloneMap);
 }
@@ -400,13 +407,15 @@ SgGroup::iterator SgGroup::removeChild(iterator childIter, bool doNotify)
 bool SgGroup::removeChild(SgNode* node, bool doNotify)
 {
     bool removed = false;
-    iterator p = children.begin();
-    while(p != children.end()){
-        if((*p) == node){
-            p = removeChild(p, doNotify);
-            removed = true;
-        } else {
-            ++p;
+    if(node){
+        iterator p = children.begin();
+        while(p != children.end()){
+            if((*p) == node){
+                p = removeChild(p, doNotify);
+                removed = true;
+            } else {
+                ++p;
+            }
         }
     }
     return removed;
@@ -466,21 +475,14 @@ SgInvariantGroup::SgInvariantGroup()
 }
 
 
-SgInvariantGroup::SgInvariantGroup(const SgInvariantGroup& org)
-    : SgGroup(org)
-{
-
-}
-
-
-SgInvariantGroup::SgInvariantGroup(const SgInvariantGroup& org, SgCloneMap& cloneMap)
+SgInvariantGroup::SgInvariantGroup(const SgInvariantGroup& org, SgCloneMap* cloneMap)
     : SgGroup(org, cloneMap)
 {
 
 }
 
 
-SgObject* SgInvariantGroup::clone(SgCloneMap& cloneMap) const
+SgObject* SgInvariantGroup::doClone(SgCloneMap* cloneMap) const
 {
     return new SgInvariantGroup(*this, cloneMap);
 }
@@ -493,14 +495,7 @@ SgTransform::SgTransform(int polymorhicId)
 }
 
 
-SgTransform::SgTransform(const SgTransform& org)
-    : SgGroup(org)
-{
-    untransformedBboxCache = org.untransformedBboxCache;
-}
-    
-
-SgTransform::SgTransform(const SgTransform& org, SgCloneMap& cloneMap)
+SgTransform::SgTransform(const SgTransform& org, SgCloneMap* cloneMap)
     : SgGroup(org, cloneMap)
 {
     untransformedBboxCache = org.untransformedBboxCache;
@@ -539,15 +534,7 @@ SgPosTransform::SgPosTransform(const Affine3& T)
 }
 
 
-SgPosTransform::SgPosTransform(const SgPosTransform& org)
-    : SgTransform(org),
-      T_(org.T_)
-{
-
-}
-
-
-SgPosTransform::SgPosTransform(const SgPosTransform& org, SgCloneMap& cloneMap)
+SgPosTransform::SgPosTransform(const SgPosTransform& org, SgCloneMap* cloneMap)
     : SgTransform(org, cloneMap),
       T_(org.T_)
 {
@@ -555,7 +542,7 @@ SgPosTransform::SgPosTransform(const SgPosTransform& org, SgCloneMap& cloneMap)
 }
 
 
-SgObject* SgPosTransform::clone(SgCloneMap& cloneMap) const
+SgObject* SgPosTransform::doClone(SgCloneMap* cloneMap) const
 {
     return new SgPosTransform(*this, cloneMap);
 }
@@ -605,21 +592,19 @@ SgScaleTransform::SgScaleTransform(const Vector3& scale)
 }
 
 
-SgScaleTransform::SgScaleTransform(const SgScaleTransform& org)
-    : SgTransform(org),
-      scale_(org.scale_)
-{
-
-}
-      
-    
-SgScaleTransform::SgScaleTransform(const SgScaleTransform& org, SgCloneMap& cloneMap)
+SgScaleTransform::SgScaleTransform(const SgScaleTransform& org, SgCloneMap* cloneMap)
     : SgTransform(org, cloneMap),
       scale_(org.scale_)
 {
 
 }
 
+
+SgObject* SgScaleTransform::doClone(SgCloneMap* cloneMap) const
+{
+    return new SgScaleTransform(*this, cloneMap);
+}
+        
 
 SgAffineTransform::SgAffineTransform(int polymorhicId)
     : SgTransform(polymorhicId),
@@ -644,15 +629,7 @@ SgAffineTransform::SgAffineTransform(const Affine3& T)
 }
 
 
-SgAffineTransform::SgAffineTransform(const SgAffineTransform& org)
-    : SgTransform(org),
-      T_(org.T_)
-{
-
-}
-
-
-SgAffineTransform::SgAffineTransform(const SgAffineTransform& org, SgCloneMap& cloneMap)
+SgAffineTransform::SgAffineTransform(const SgAffineTransform& org, SgCloneMap* cloneMap)
     : SgTransform(org, cloneMap),
       T_(org.T_)
 {
@@ -660,7 +637,7 @@ SgAffineTransform::SgAffineTransform(const SgAffineTransform& org, SgCloneMap& c
 }
 
 
-SgObject* SgAffineTransform::clone(SgCloneMap& cloneMap) const
+SgObject* SgAffineTransform::doClone(SgCloneMap* cloneMap) const
 {
     return new SgAffineTransform(*this, cloneMap);
 }
@@ -685,12 +662,6 @@ const BoundingBox& SgAffineTransform::boundingBox() const
 void SgAffineTransform::getTransform(Affine3& out_T) const
 {
     out_T = T_;
-}
-
-
-SgObject* SgScaleTransform::clone(SgCloneMap& cloneMap) const
-{
-    return new SgScaleTransform(*this, cloneMap);
 }
 
 
@@ -723,23 +694,25 @@ SgSwitch::SgSwitch()
 }
 
 
-SgSwitch::SgSwitch(const SgSwitch& org)
-    : SgGroup(org)
-{
-    isTurnedOn_ = org.isTurnedOn_;
-}
-
-
-SgSwitch::SgSwitch(const SgSwitch& org, SgCloneMap& cloneMap)
+SgSwitch::SgSwitch(const SgSwitch& org, SgCloneMap* cloneMap)
     : SgGroup(org, cloneMap)
 {
     isTurnedOn_ = org.isTurnedOn_;
 }
 
 
-SgObject* SgSwitch::clone(SgCloneMap& cloneMap) const
+SgObject* SgSwitch::doClone(SgCloneMap* cloneMap) const
 {
     return new SgSwitch(*this, cloneMap);
+}
+
+
+void SgSwitch::setTurnedOn(bool on, bool doNotify)
+{
+    isTurnedOn_ = on;
+    if(doNotify){
+        notifyUpdate();
+    }
 }
 
 
@@ -750,21 +723,14 @@ SgUnpickableGroup::SgUnpickableGroup()
 }
 
 
-SgUnpickableGroup::SgUnpickableGroup(const SgUnpickableGroup& org)
-    : SgGroup(org)
-{
-
-}
-
-
-SgUnpickableGroup::SgUnpickableGroup(const SgUnpickableGroup& org, SgCloneMap& cloneMap)
+SgUnpickableGroup::SgUnpickableGroup(const SgUnpickableGroup& org, SgCloneMap* cloneMap)
     : SgGroup(org, cloneMap)
 {
 
 }
 
 
-SgObject* SgUnpickableGroup::clone(SgCloneMap& cloneMap) const
+SgObject* SgUnpickableGroup::doClone(SgCloneMap* cloneMap) const
 {
     return new SgUnpickableGroup(*this, cloneMap);
 }
@@ -781,12 +747,6 @@ SgPreprocessed::SgPreprocessed(const SgPreprocessed& org)
     : SgNode(org)
 {
 
-}
-
-
-SgObject* SgPreprocessed::clone(SgCloneMap&) const
-{
-    return new SgPreprocessed(*this);
 }
 
 

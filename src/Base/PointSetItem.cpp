@@ -18,11 +18,9 @@
 #include <cnoid/Exception>
 #include <cnoid/FileUtil>
 #include <cnoid/PolyhedralRegion>
-#include <boost/dynamic_bitset.hpp>
 #include "gettext.h"
 
 using namespace std;
-using namespace std::placeholders;
 using namespace cnoid;
 
 namespace {
@@ -144,8 +142,8 @@ void PointSetItem::initializeClass(ExtensionManager* ext)
         im.addCreationPanel<PointSetItem>();
         im.addLoaderAndSaver<PointSetItem>(
             _("Point Cloud (PCD)"), "PCD-FILE", "pcd",
-            std::bind(::loadPCD, _1, _2, _3),
-            std::bind(::saveAsPCD, _1, _2, _3),
+            [](PointSetItem* item, const std::string& filename, std::ostream& os, Item*){ return ::loadPCD(item, filename, os); },
+            [](PointSetItem* item, const std::string& filename, std::ostream& os, Item*){ return ::saveAsPCD(item, filename, os); },
             ItemManager::PRIORITY_CONVERSION);
         
         initialized = true;
@@ -188,8 +186,7 @@ PointSetItemImpl::PointSetItemImpl(PointSetItem* self, const PointSetItemImpl& o
 void PointSetItem::initialize()
 {
     impl->pointSetUpdateConnection.reset(
-        impl->pointSet->sigUpdated().connect(
-            std::bind(&PointSetItem::notifyUpdate, this)));
+        impl->pointSet->sigUpdated().connect([&](const SgUpdate&){ notifyUpdate(); }));
 }
 
 
@@ -373,12 +370,12 @@ SignalProxy<void()> PointSetItem::sigAttentionPointsChanged()
 }
 
 
-boost::optional<Vector3> PointSetItem::attentionPoint() const
+stdx::optional<Vector3> PointSetItem::attentionPoint() const
 {
     if(numAttentionPoints() == 1){
         return attentionPoint(0);
     }
-    return boost::none;
+    return stdx::nullopt;
 }
 
 
@@ -483,7 +480,7 @@ void PointSetItemImpl::removeSubElements(ElementContainer& elements, SgIndexArra
         const SgIndexArray orgIndices(indices);
         const int numOrgIndices = orgIndices.size();
         indices.clear();
-        boost::dynamic_bitset<> elementValidness(numOrgElements);
+        vector<bool> elementValidness(numOrgElements, false);
         int j = 0;
         int nextIndexToRemove = indicesToRemove[j++];
         for(int i=0; i < numOrgIndices; ++i){
@@ -493,14 +490,14 @@ void PointSetItemImpl::removeSubElements(ElementContainer& elements, SgIndexArra
                 }
             } else {
                 int index = orgIndices[i];
-                elementValidness.set(index);
+                elementValidness[index] = true;
                 indices.push_back(index);
             }
         }
         vector<int> indexMap(numOrgElements);
         int newIndex = 0;
         for(int i=0; i < numOrgElements; ++i){
-            if(elementValidness.test(i)){
+            if(elementValidness[i]){
                 elements.push_back(orgElements[i]);
                 ++newIndex;
             }
@@ -518,18 +515,18 @@ void PointSetItem::doPutProperties(PutPropertyFunction& putProperty)
     ScenePointSet* scene = impl->scene;
     putProperty(_("File"), getFilename(filePath()));
     putProperty(_("Rendering mode"), scene->renderingMode,
-                std::bind(&PointSetItemImpl::onRenderingModePropertyChanged, impl, _1));
+                [&](int mode){ return impl->onRenderingModePropertyChanged(mode); });
     putProperty.decimals(1).min(0.0)(_("Point size"), pointSize(),
-                                     std::bind(&ScenePointSet::setPointSize, scene, _1), true);
+                                     [=](double size){ scene->setPointSize(size); return true; });
     putProperty.decimals(4)(_("Voxel size"), voxelSize(),
-                            std::bind(&ScenePointSet::setVoxelSize, scene, _1), true);
-    putProperty(_("Editable"), isEditable(), std::bind(&PointSetItemImpl::onEditableChanged, impl, _1));
+                            [=](double size){ scene->setVoxelSize(size); return true; });
+    putProperty(_("Editable"), isEditable(), [&](bool on){ return impl->onEditableChanged(on); });
     const SgVertexArray* points = impl->pointSet->vertices();
     putProperty(_("Num points"), static_cast<int>(points ? points->size() : 0));
     putProperty(_("Translation"), str(Vector3(offsetTransform().translation())),
-                std::bind(&PointSetItemImpl::onTranslationPropertyChanged, impl, _1));
+                [&](const string& value){ return impl->onTranslationPropertyChanged(value); });
     Vector3 rpy(TO_DEGREE * rpyFromRot(offsetTransform().linear()));
-    putProperty("RPY", str(rpy), std::bind(&PointSetItemImpl::onRotationPropertyChanged, impl, _1));
+    putProperty("RPY", str(rpy), [&](const string& value){ return impl->onRotationPropertyChanged(value);});
 }
 
 
@@ -621,9 +618,9 @@ ScenePointSet::ScenePointSet(PointSetItemImpl* pointSetItemImpl)
     regionMarker = new RectRegionMarker;
     regionMarker->setEditModeCursor(QCursor(QPixmap(":/Base/icons/eraser-cursor.png"), 3, 2));
     regionMarker->sigRegionFixed().connect(
-        std::bind(&ScenePointSet::onRegionFixed, this, _1));
+        [&](const PolyhedralRegion& region){ onRegionFixed(region); });
     regionMarker->sigContextMenuRequest().connect(
-        std::bind(&ScenePointSet::onContextMenuRequestInEraserMode, this, _1, _2));
+        [&](const SceneWidgetEvent& event, MenuManager& manager){ onContextMenuRequestInEraserMode(event, manager); });
 
     isEditable_ = false;
 }
@@ -896,12 +893,13 @@ void ScenePointSet::onContextMenuRequest(const SceneWidgetEvent& event, MenuMana
 {
     if(isEditable_){
         menuManager.addItem(_("PointSet: Clear Attention Points"))->sigTriggered().connect(
-            std::bind(&ScenePointSet::clearAttentionPoints, this, true));
+            [&](){ clearAttentionPoints(true); });
 
         if(!regionMarker->isEditing()){
+            SceneWidget* sceneWidget = event.sceneWidget();
             eraserModeMenuItemConnection.reset(
                 menuManager.addItem(_("PointSet: Start Eraser Mode"))->sigTriggered().connect(
-                    std::bind(&RectRegionMarker::startEditing, regionMarker.get(), event.sceneWidget())));
+                    [&, sceneWidget](){ regionMarker->startEditing(sceneWidget); }));
         }
     }
 }
@@ -911,7 +909,7 @@ void ScenePointSet::onContextMenuRequestInEraserMode(const SceneWidgetEvent&, Me
 {
     eraserModeMenuItemConnection.reset(
         menuManager.addItem(_("PointSet: Exit Eraser Mode"))->sigTriggered().connect(
-            std::bind(&RectRegionMarker::finishEditing, regionMarker.get())));
+            [&](){ regionMarker->finishEditing(); }));
 }
 
 

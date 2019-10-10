@@ -15,16 +15,21 @@ using namespace cnoid;
 
 namespace {
 
-AbstractSeqItem* createMultiDeviceStateSeqItem(AbstractSeqPtr seq)
+AbstractSeqItem* createMultiDeviceStateSeqItem(std::shared_ptr<AbstractSeq> seq)
 {
-    MultiDeviceStateSeqPtr dseq = dynamic_pointer_cast<MultiDeviceStateSeq>(seq);
-    return dseq ? new MultiDeviceStateSeqItem(dseq) : 0;
+    auto dseq = dynamic_pointer_cast<MultiDeviceStateSeq>(seq);
+    if(dseq){
+        auto item = new MultiDeviceStateSeqItem(dseq);
+        item->setName("Devices");
+        return item;
+    }
+    return nullptr;
 }
 
 
 class MultiDeviceStateSeqEngine : public TimeSyncItemEngine
 {
-    MultiDeviceStateSeqPtr seq;
+    shared_ptr<MultiDeviceStateSeq> seq;
     BodyPtr body;
     vector<DeviceStatePtr> prevStates;
 
@@ -94,7 +99,7 @@ MultiDeviceStateSeqItem::MultiDeviceStateSeqItem()
 }
 
 
-MultiDeviceStateSeqItem::MultiDeviceStateSeqItem(MultiDeviceStateSeqPtr seq)
+MultiDeviceStateSeqItem::MultiDeviceStateSeqItem(std::shared_ptr<MultiDeviceStateSeq> seq)
     : seq_(seq)
 {
     setName(seq->seqContentName());
@@ -115,7 +120,7 @@ MultiDeviceStateSeqItem::~MultiDeviceStateSeqItem()
 }
 
 
-AbstractMultiSeqPtr MultiDeviceStateSeqItem::abstractMultiSeq()
+std::shared_ptr<AbstractMultiSeq> MultiDeviceStateSeqItem::abstractMultiSeq()
 {
     return seq_;
 }

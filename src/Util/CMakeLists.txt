@@ -1,9 +1,16 @@
 #set(CMAKE_BUILD_TYPE Debug)
-#set_source_files_properties(Image.cpp PROPERTIES COMPILE_FLAGS "-O0 -g")
+#set_source_files_properties(STLSceneLoader.cpp PROPERTIES COMPILE_FLAGS "-O0 -g")
 
-configure_file(Config.h.in ${CMAKE_CURRENT_SOURCE_DIR}/Config.h)
+configure_file(Config.h.in Config.h)
+
+if(INSTALL_SDK)
+  install(FILES ${CMAKE_CURRENT_BINARY_DIR}/Config.h DESTINATION ${CNOID_HEADER_SUBDIR}/src/Util/)
+endif()
 
 set(sources
+  Config.cpp
+  Referenced.cpp
+  CloneMap.cpp
   ConnectionSet.cpp
   Selection.cpp
   DataMap.cpp
@@ -15,8 +22,10 @@ set(sources
   UTF8.cpp
   EasyScanner.cpp
   NullOut.cpp
+  StringUtil.cpp
   FileUtil.cpp
   ExecutablePath.cpp
+  ParametricPathProcessor.cpp
   AbstractSeq.cpp
   Vector3Seq.cpp
   MultiSE3Seq.cpp
@@ -39,7 +48,7 @@ set(sources
   SceneProvider.cpp
   SceneUtil.cpp
   MeshGenerator.cpp
-  MeshNormalGenerator.cpp
+  MeshFilter.cpp
   MeshExtractor.cpp
   SceneMarkers.cpp
   CoordinateAxesOverlay.cpp
@@ -59,7 +68,6 @@ set(sources
   VRMLWriter.cpp
   VRMLToSGConverter.cpp
   VRMLSceneLoader.cpp
-  GettextWrapper.cpp
   GettextUtil.cpp
   ExtJoystick.cpp
   CnoidUtil.cpp # This file must be placed at the last position
@@ -75,6 +83,9 @@ elseif(APPLE)
 endif()
 
 set(headers
+  Referenced.h
+  CloneMap.h
+  CloneMappableReferenced.h
   EasyScanner.h
   GaussianFilter.h
   UniformCubicBSpline.h
@@ -92,15 +103,18 @@ set(headers
   NullOut.h
   PlainSeqFileLoader.h
   RangeLimiter.h
-  Referenced.h
   Seq.h
   AbstractSeq.h
   Timeval.h
   TimeMeasure.h
   Sleep.h
   Vector3Seq.h
+  StringUtil.h
+  Tokenizer.h
   FileUtil.h
+  MathUtil.h
   ExecutablePath.h
+  ParametricPathProcessor.h
   UTF8.h
   BoundingBox.h
   SceneGraph.h
@@ -113,7 +127,7 @@ set(headers
   AbstractSceneLoader.h
   SceneLoader.h
   MeshGenerator.h
-  MeshNormalGenerator.h
+  MeshFilter.h
   MeshExtractor.h
   SceneMarkers.h
   CoordinateAxesOverlay.h
@@ -148,16 +162,20 @@ set(headers
   GettextUtil.h
   Selection.h
   DataMap.h
+  JoystickInterface.h
   Joystick.h
-  JoystickGamepad.h
   ExtJoystick.h
+  SharedJoystick.h
   Task.h
   AbstractTaskSequencer.h
   Exception.h
   exportdecl.h
-  Config.h
   CnoidUtil.h
+  ThreadPool.h
   )
+
+include_directories(${LIBYAML_INCLUDE_DIRS})
+link_directories(${LIBYAML_LIBRARY_DIRS})
 
 set(target CnoidUtil)
 make_gettext_mofiles(${target} mofiles)
@@ -165,14 +183,16 @@ add_cnoid_library(${target} SHARED ${sources} ${headers} ${mofiles})
 
 if(UNIX)
   set(libraries 
-    yaml ${PNG_LIBRARY} ${JPEG_LIBRARY}
+    ${LIBYAML_LIBRARIES} ${PNG_LIBRARY} ${JPEG_LIBRARY}
     ${CMAKE_THREAD_LIBS_INIT}
     ${Boost_SYSTEM_LIBRARY} ${Boost_FILESYSTEM_LIBRARY}
     ${GETTEXT_LIBRARIES}
-    m)
+    fmt::fmt
+    m
+    )
 
-  if(CNOID_USE_BOOST_REGEX)
-    set(libraries ${libraries} ${Boost_REGEX_LIBRARY})
+  if(CMAKE_COMPILER_IS_GNUCC AND (NOT CMAKE_CXX_STANDARD LESS 17))
+    set(libraries ${libraries} stdc++fs)
   endif()
 
   if(APPLE)
@@ -183,37 +203,24 @@ if(UNIX)
   
 elseif(MSVC)
   set_target_properties(${target} PROPERTIES COMPILE_DEFINITIONS "YAML_DECLARE_STATIC")
-  set(libraries libpng jpeg zlib winmm ${GETTEXT_LIBRARIES})
-  if(USE_EXTERNAL_YAML)
-    set(libraries ${libraries} optimized yaml debug yamld)
+  set(libraries ${LIBYAML_LIBRARIES} libpng jpeg zlib winmm ${GETTEXT_LIBRARIES} fmt::fmt)
+  find_file(XINPUT_DLL "XInput1_4.dll")
+  if(XINPUT_DLL)
+    target_link_libraries(${target} ${libraries} XInput)
+    add_definitions(-DUSE_XINPUT)
   else()
-    set(libraries ${libraries} yaml)
+    find_file(XINPUT_DLL "XInput9_1_0.dll")
+    if(XINPUT_DLL)
+      target_link_libraries(${target} ${libraries} XInput9_1_0)
+      add_definitions(-DUSE_XINPUT)
+    endif()
   endif()
-  target_link_libraries(${target} ${libraries})
 endif()
 
 apply_common_setting_for_library(${target} "${headers}")
 
-# Adding some headers with old filenames for the backward compatibility
-if(CNOID_ENABLE_BACKWARD_COMPATIBILITY)
-  if(UNIX AND NOT APPLE)
-    make_header_public(VRML.h VRMLNodes)
-    make_header_public(VRML.h VrmlNodes)
-    make_header_public(VRMLParser.h VrmlParser)
-    make_header_public(VRMLWriter.h VrmlWriter)
-    make_header_public(YAMLReader.h YamlReader)
-    make_header_public(YAMLWriter.h YamlWriter)
-  endif()
-  make_header_public(ValueTree.h YamlNodes)
-  make_header_public(EigenArchive.h EigenYaml)
-endif()
-
 if(ENABLE_PYTHON)
-  if(USE_PYBIND11)
-    add_subdirectory(pybind11)
-  elseif(USE_BOOST_PYTHON)
-    add_subdirectory(boostpython)
-  endif()
+  add_subdirectory(pybind11)
 endif()
 
 add_subdirectory(lua)

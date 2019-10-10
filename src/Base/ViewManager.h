@@ -53,6 +53,8 @@ public:
         return static_cast<ViewType*>(
             registerClassSub(typeid(ViewType), className, defaultInstanceName, itype, new Factory<ViewType>()));
     }
+
+    void registerClassAlias(const std::string& alias, const std::string& orgClassName);
     
     static ViewClass* viewClass(const std::type_info& view_type_info);
 
@@ -101,7 +103,7 @@ public:
         friend class ViewManager;
     };
 
-    static void restoreViews(ArchivePtr archive, const std::string& key, ViewStateInfo& out_viewStateInfo);
+    static bool restoreViews(ArchivePtr archive, const std::string& key, ViewStateInfo& out_viewStateInfo);
     static bool restoreViewStates(ViewStateInfo& info);
 
     static SignalProxy<void(View* view)> sigViewCreated();

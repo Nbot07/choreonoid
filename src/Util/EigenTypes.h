@@ -7,7 +7,6 @@
 
 #include <Eigen/Core>
 #include <Eigen/Geometry>
-//#include <Eigen/AlignedVector3>
 
 namespace cnoid {
 
@@ -86,6 +85,8 @@ public:
         : p(translation), q(rotation) { }
     SE3(const Vector3& translation, const Matrix3& rotation)
         : p(translation), q(rotation) { }
+    SE3(const Position& T)
+        : p(T.translation()), q(T.linear()) { }
 
     void set(const Vector3& translation, const Quat& rotation) {
         this->p = translation;
@@ -99,6 +100,7 @@ public:
         p = T.translation();
         q = T.linear();
     }
+
     Vector3& translation() { return p; }
     const Vector3& translation() const { return p; }
     Quat& rotation() { return q; }

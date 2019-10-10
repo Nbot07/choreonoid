@@ -4,6 +4,7 @@
 
 #include "ControllerRTCItem.h"
 #include "OpenRTMUtil.h"
+#include "LoggerUtil.h"
 #include <cnoid/ItemManager>
 #include <cnoid/MessageView>
 #include <cnoid/ProjectManager>
@@ -11,13 +12,25 @@
 #include <cnoid/Sleep>
 #include <cnoid/ExecutablePath>
 #include <cnoid/FileUtil>
-#include <boost/lexical_cast.hpp>
+#include <cnoid/CorbaUtil>
+#include <fmt/format.h>
 #include "gettext.h"
 
 using namespace std;
 using namespace cnoid;
-using boost::format;
+using fmt::format;
 namespace filesystem = boost::filesystem;
+
+namespace {
+
+enum ExecContextType {
+    SIMULATION_EXECUTION_CONTEXT = 0,
+    SIMULATION_PERIODIC_EXECUTION_CONTEXT,
+    N_EXEC_CONTEXT_TYPES,
+    NO_EXECUTION_CONTEXT
+};
+
+}
 
 namespace cnoid {
 
@@ -25,9 +38,11 @@ class ControllerRTCItemImpl
 {
 public:
     ControllerRTCItem* self;
-    RTC::RtcBase* rtc = 0;
-    OpenRTM::ExtTrigExecutionContextService_var execContext;
-    bool isChoreonoidExecutionContext;
+    RTC::RtcBase* rtc;
+
+    RTC::ExecutionContextService_var execContext;
+    OpenRTM::ExtTrigExecutionContextService_var extTrigExecContext;
+    int currentExecContextType;
 
     int periodicRateProperty;
     int periodicRate;
@@ -50,13 +65,8 @@ public:
 
     filesystem::path rtcDirectory;
 
-    enum ExecContextType {
-        PERIODIC_EXECUTION_CONTEXT,
-        CHOREONOID_EXECUTION_CONTEXT,
-        N_EXEC_CONTEXT_TYPES
-    };
     Selection execContextType;
-    bool useOnlyChoreonoidExecutionContext = false;
+    bool useOnlySimulationExecutionContext = false;
 
     MessageView* mv;
     
@@ -65,7 +75,7 @@ public:
     void setBaseDirectoryType(int type);
     void setRTCModule(const std::string& name);
     std::string getModuleFilename();
-    bool createRTCmain();
+    bool createRTCmain(bool isBodyIORTC = false);
     void deleteRTC(bool waitToBeDeleted);
     bool start();
     void stop();
@@ -100,6 +110,11 @@ ControllerRTCItemImpl::ControllerRTCItemImpl(ControllerRTCItem* self)
       execContextType(N_EXEC_CONTEXT_TYPES, CNOID_GETTEXT_DOMAIN_NAME),
       mv(MessageView::instance())
 {
+    rtc = nullptr;
+    currentExecContextType = NO_EXECUTION_CONTEXT;
+    
+    periodicRateProperty = 0;
+
     baseDirectoryType.setSymbol(NO_BASE_DIRECTORY, N_("None"));
     baseDirectoryType.setSymbol(RTC_DIRECTORY, N_("RTC directory"));
     baseDirectoryType.setSymbol(PROJECT_DIRECTORY, N_("Project directory"));
@@ -107,11 +122,10 @@ ControllerRTCItemImpl::ControllerRTCItemImpl(ControllerRTCItem* self)
 
     rtcDirectory = filesystem::path(executableTopDirectory()) / CNOID_PLUGIN_SUBDIR / "rtc";
 
-    execContextType.setSymbol(PERIODIC_EXECUTION_CONTEXT,  N_("PeriodicExecutionContext"));
-    execContextType.setSymbol(CHOREONOID_EXECUTION_CONTEXT,  N_("ChoreonoidExecutionContext"));
-    execContextType.select(CHOREONOID_EXECUTION_CONTEXT);
+    execContextType.setSymbol(SIMULATION_EXECUTION_CONTEXT,  N_("SimulationExecutionContext"));
+    execContextType.setSymbol(SIMULATION_PERIODIC_EXECUTION_CONTEXT,  N_("SimulationPeriodicExecutionContext"));
+    execContextType.select(SIMULATION_EXECUTION_CONTEXT);
 
-    periodicRateProperty = 0;
 }
 
 
@@ -131,7 +145,7 @@ ControllerRTCItemImpl::ControllerRTCItemImpl(ControllerRTCItem* self, const Cont
     rtcInstanceNameProperty = org.rtcInstanceNameProperty;
     periodicRateProperty = org.periodicRateProperty;
     execContextType = org.execContextType;
-    useOnlyChoreonoidExecutionContext = org.useOnlyChoreonoidExecutionContext;
+    useOnlySimulationExecutionContext = org.useOnlySimulationExecutionContext;
 }
 
 
@@ -208,9 +222,37 @@ void ControllerRTCItem::setRTCInstanceName(const std::string& name)
 
 void ControllerRTCItem::setExecContextType(int which)
 {
+    DDEBUG_V("ControllerRTCItem::setExecContextType %d", which);
+
     if(which != impl->execContextType.which()){
         impl->execContextType.select(which);
+
+#if defined(OPENRTM_VERSION11)
         createRTC();
+
+#elif defined(OPENRTM_VERSION12)
+        
+        if(CORBA::is_nil(impl->execContext)){ // Is this check valid?
+            return;
+        }
+
+        RTC::ReturnCode_t ret = impl->execContext->stop();
+        DDEBUG_V("ControllerRTCItem::setExecContextType stop %d", ret);
+        RTC::ExecutionContextList_var eclist = impl->rtc->get_owned_contexts();
+        for(CORBA::ULong index = 0; index < eclist->length(); ++index){
+            if(!CORBA::is_nil(eclist[index])){
+                RTC::ExecutionContextService_var execContext = RTC::ExecutionContextService::_narrow(eclist[index]);
+                if(!CORBA::is_nil(execContext)){
+                    // Why is the following condition checked???
+                    if(which == index){
+                        impl->execContext = execContext; // Is this direct assignment valid?
+                        impl->execContext->start();
+                        DDEBUG_V("ControllerRTCItem::setExecContextType start %d", index);
+                    }
+                }
+            }
+        }
+#endif
     }
 }
 
@@ -242,10 +284,10 @@ std::string ControllerRTCItem::rtcInstanceName() const
 }
 
 
-void ControllerRTCItem::useOnlyChoreonoidExecutionContext()
+void ControllerRTCItem::useOnlySimulationExecutionContext()
 {
-    impl->useOnlyChoreonoidExecutionContext = true;
-    setExecContextType(ControllerRTCItemImpl::CHOREONOID_EXECUTION_CONTEXT);
+    impl->useOnlySimulationExecutionContext = true;
+    setExecContextType(SIMULATION_EXECUTION_CONTEXT);
 }
 
 
@@ -267,10 +309,11 @@ std::string ControllerRTCItemImpl::getModuleFilename()
             if(!projectDir.empty()){
                 path = filesystem::path(projectDir) / path;
             } else {
-                mv->putln(MessageView::ERROR,
-                          format(_("The rtc of %1% cannot be generated because the project directory "
-                                   "is not determined. Please save the project as a project file."))
-                          % self->name());
+                mv->putln(
+                    format(_("The rtc of {} cannot be generated because the project directory "
+                             "is not determined. Please save the project as a project file."),
+                           self->name()),
+                    MessageView::ERROR);
                 return string();
             }
         }
@@ -285,9 +328,9 @@ std::string ControllerRTCItemImpl::getModuleFilename()
     if(filesystem::exists(path)){
         return path.string();
     } else {
-        mv->putln(MessageView::ERROR,
-                  format(_("RTC module file \"%1%\" of %2% does not exist."))
-                  % path.string() % self->name());
+        mv->putln(
+            format(_("RTC module file \"{0}\" of {1} does not exist."), path.string(), self->name()),
+            MessageView::ERROR);
     }
     
     return string();
@@ -303,21 +346,21 @@ std::string ControllerRTCItem::getDefaultRTCInstanceName() const
 bool ControllerRTCItem::createRTC()
 {
     if(impl->createRTCmain()){
-        impl->mv->putln(fmt(_("BodyIoRTC \"%1%\" has been created.")) % impl->rtcInstanceName);
+        impl->mv->putln(format(_("BodyIoRTC \"{}\" has been created."), impl->rtcInstanceName));
         return true;
     }
     return false;
 }
 
 
-bool ControllerRTCItem::createRTCmain()
+bool ControllerRTCItem::createRTCmain(bool isBodyIORTC)
 {
-    return impl->createRTCmain();
+    return impl->createRTCmain(isBodyIORTC);
 }
 
 
-bool ControllerRTCItemImpl::createRTCmain()
-{
+bool ControllerRTCItemImpl::createRTCmain(bool isBodyIORTC) {
+  DDEBUG_V("ControllerRTCItemImpl::createRTCmain:%d", isBodyIORTC);
     if(rtc){
         self->deleteRTC(true);
     }
@@ -335,9 +378,9 @@ bool ControllerRTCItemImpl::createRTCmain()
         instanceBaseName = self->getDefaultRTCInstanceName();
     }
     if(instanceBaseName.empty()){
-        mv->putln(MessageView::ERROR,
-                  format(_("The RTC instance name of %1% is not specified."))
-                  % self->name());
+        mv->putln(
+            format(_("The RTC instance name of {} is not specified."), self->name()),
+            MessageView::ERROR);
         return false;
     }
     rtcInstanceName = instanceBaseName;
@@ -348,52 +391,107 @@ bool ControllerRTCItemImpl::createRTCmain()
         if(manager.getComponent(rtcInstanceName.c_str()) == nullptr){
             break;
         }
-        rtcInstanceName = str(format("%1%(%2%)") % instanceBaseName % index++);
+        rtcInstanceName = format("{0}({1})", instanceBaseName, index++);
     }
     if(index >= maxNumInstances){
-        mv->putln(MessageView::ERROR,
-                  format(_("RTC \"%1%\" of %2% is not created because more than "
-                           "%3% existing instances have the same base name \"%4%\"."))
-                  % moduleName % self->name() % maxNumInstances % instanceBaseName);
+        mv->putln(
+            format(_("RTC \"{0}\" of {1} is not created because more than "
+                     "{2} existing instances have the same base name \"{3}\"."),
+                   moduleName, self->name(), maxNumInstances, instanceBaseName),
+            MessageView::ERROR);
         return false;
     }
 
     string option;
     if(periodicRateProperty > 0){
         periodicRate = periodicRateProperty;
-        option = 
-            str(format("instance_name=%1%&exec_cxt.periodic.type=%2%&exec_cxt.periodic.rate=%3%")
-                % rtcInstanceName % execContextType.selectedSymbol() % periodicRate);
+
+#if defined(OPENRTM_VERSION11)
+        option =
+            format("instance_name={0}&exec_cxt.periodic.type={1}&exec_cxt.periodic.rate={2}",
+                   rtcInstanceName, execContextType.selectedSymbol(), periodicRate);
+        DDEBUG("ControllerRTCItemImpl::createRTCmain OPENRTM_VERSION11");
+
+#elif defined(OPENRTM_VERSION12)
+        if(isBodyIORTC){
+            option =
+                format("instance_name={0}&execution_contexts=SimulationExecutionContext()&"
+                       "exec_cxt.periodic.type={1}&exec_cxt.periodic.rate={2}&"
+                       "exec_cxt.sync_activation=NO&exec_cxt.sync_deactivation=NO",
+                       rtcInstanceName, execContextType.selectedSymbol(), periodicRate);
+            DDEBUG_V("ControllerRTCItemImpl::createRTCmain isBodyIORTC=TRUE  %s", option.c_str());
+        } else {
+            option =
+                format("instance_name={0}&"
+                        "execution_contexts=SimulationExecutionContext(),SimulationPeriodicExecutionContext()&"
+                        "exec_cxt.periodic.type={1}&exec_cxt.periodic.rate={2}&"
+                        "exec_cxt.sync_activation=NO&exec_cxt.sync_deactivation=NO",
+                       rtcInstanceName, execContextType.selectedSymbol(), periodicRate);
+            DDEBUG_V("ControllerRTCItemImpl::createRTCmain isBodyIORTC=FALSE  %s", option.c_str());
+        }
+#endif
     } else {
         periodicRate = 0;
-        option = 
-            str(format("instance_name=%1%&exec_cxt.periodic.type=%2%")
-                % rtcInstanceName % execContextType.selectedSymbol());
+
+#if defined(OPENRTM_VERSION11)
+          option =
+              format("instance_name={0}&exec_cxt.periodic.type={1}",
+                     rtcInstanceName, execContextType.selectedSymbol());
+          DDEBUG("ControllerRTCItemImpl::createRTCmain OPENRTM_VERSION11");
+
+#elif defined(OPENRTM_VERSION12)
+        if(isBodyIORTC){
+            option =
+                format("instance_name={0}&execution_contexts=SimulationExecutionContext()&"
+                       "exec_cxt.periodic.type={1}&exec_cxt.sync_activation=NO&exec_cxt.sync_deactivation=NO",
+                       rtcInstanceName, execContextType.selectedSymbol());
+            DDEBUG_V("ControllerRTCItemImpl::createRTCmain isBodyIORTC=TRUE  %s", option.c_str());
+        } else {
+            option =
+                format("instance_name={0}&"
+                       "execution_contexts=SimulationExecutionContext(),SimulationPeriodicExecutionContext()&"
+                       "exec_cxt.periodic.type={1}&exec_cxt.sync_activation=NO&exec_cxt.sync_deactivation=NO",
+                       rtcInstanceName, execContextType.selectedSymbol());
+            DDEBUG_V("ControllerRTCItemImpl::createRTCmain isBodyIORTC=FALSE  %s", option.c_str());
+        }
+#endif
     }
-    rtc = createManagedRTC((moduleName + "?" + option).c_str());
+    rtc = createManagedRTC(moduleName + "?" + option);
 
     if(!rtc){
-        mv->putln(MessageView::ERROR,
-                  format(_("RTC \"%1%\" of %2% cannot be created by the RTC manager.\n"
-                           " RTC module file: \"%3%\"\n"
-                           " Init function: %4%\n"
-                           " option: %5%"))
-                  % moduleName % self->name() % moduleFilename % initFuncName % option);
+        mv->putln(
+            format(_("RTC \"{0}\" of {1} cannot be created by the RTC manager.\n"
+                     " RTC module file: \"{2}\"\n"
+                     " Init function: {3}\n"
+                     " option: {4}"),
+                   moduleName, self->name(), moduleFilename, initFuncName, option),
+            MessageView::ERROR);
         return false;
     }
 
     if(periodicRate == 0){
-        periodicRate = boost::lexical_cast<int>(rtc->getProperties()["exec_cxt.periodic.rate"]);
+        periodicRate = QString::fromStdString(string(rtc->getProperties()["exec_cxt.periodic.rate"])).toInt();  
     }
 
-    execContext = OpenRTM::ExtTrigExecutionContextService::_nil();
-    isChoreonoidExecutionContext = false; 
+    currentExecContextType = execContextType.which();
+    execContext = RTC::ExecutionContextService::_nil();
     RTC::ExecutionContextList_var eclist = rtc->get_owned_contexts();
+
+#if defined(OPENRTM_VERSION11)
     for(CORBA::ULong i=0; i < eclist->length(); ++i){
         if(!CORBA::is_nil(eclist[i])){
-            execContext = OpenRTM::ExtTrigExecutionContextService::_narrow(eclist[i]);
-            isChoreonoidExecutionContext = execContextType.is(CHOREONOID_EXECUTION_CONTEXT);
+            execContext = RTC::ExecutionContextService::_narrow(eclist[i]);
             break;
+        }
+    }
+#elif defined(OPENRTM_VERSION12)
+    execContext = RTC::ExecutionContextService::_narrow(eclist[currentExecContextType]);
+#endif
+    extTrigExecContext = OpenRTM::ExtTrigExecutionContextService::_narrow(execContext);
+
+    if(currentExecContextType == SIMULATION_EXECUTION_CONTEXT){
+        if(CORBA::is_nil(extTrigExecContext)){
+            currentExecContextType = NO_EXECUTION_CONTEXT;
         }
     }
 
@@ -424,9 +522,10 @@ void ControllerRTCItemImpl::deleteRTC(bool waitToBeDeleted)
             }
         }
         if(!deleted){
-            mv->putln(MessageView::WARNING,
-                      format(_("RTC instance %1% of %2% cannot be deleted."))
-                      % rtcInstanceName % self->name());
+            mv->putln(
+                format(_("RTC instance {0} of {1} cannot be deleted."),
+                       rtcInstanceName, self->name()),
+                MessageView::WARNING);
         }
     }
 }
@@ -442,22 +541,26 @@ bool ControllerRTCItemImpl::start()
 {
     bool isReady = false;
     
-    if(rtc){
-        if(!CORBA::is_nil(execContext)){
-            RTC::ReturnCode_t result = RTC::RTC_OK;
-            RTC::LifeCycleState state = execContext->get_component_state(rtc->getObjRef());
-            if(state == RTC::ERROR_STATE){
-                result = execContext->reset_component(rtc->getObjRef());
-                execContext->tick();
-            } else if(state == RTC::ACTIVE_STATE){
-                result = execContext->deactivate_component(rtc->getObjRef());
-                execContext->tick();
-            }
-            if(result == RTC::RTC_OK){
-                result = execContext->activate_component(rtc->getObjRef());
-                execContext->tick();
-            }
-            if(result == RTC::RTC_OK){
+    if(rtc && currentExecContextType != NO_EXECUTION_CONTEXT){
+
+        RTC::ReturnCode_t result = RTC::RTC_OK;
+        RTC::LifeCycleState state = execContext->get_component_state(rtc->getObjRef());
+
+        bool doStateChange = false;
+        if(state == RTC::ERROR_STATE){
+            doStateChange = true;
+            result = execContext->reset_component(rtc->getObjRef());
+        } else if(state == RTC::ACTIVE_STATE){
+            doStateChange = true;
+            result = execContext->deactivate_component(rtc->getObjRef());
+        }
+
+        if(doStateChange && currentExecContextType == SIMULATION_EXECUTION_CONTEXT){
+            extTrigExecContext->tick();
+        }
+
+        if(result == RTC::RTC_OK){
+            if(execContext->activate_component(rtc->getObjRef()) == RTC::RTC_OK){
                 isReady = true;
             }
         }
@@ -481,8 +584,8 @@ void ControllerRTCItem::input()
 
 bool ControllerRTCItem::control()
 {
-    if(impl->isChoreonoidExecutionContext){
-        impl->execContext->tick();
+    if(impl->currentExecContextType == SIMULATION_EXECUTION_CONTEXT){
+        impl->extTrigExecContext->tick();
     }
     return true;
 }
@@ -508,7 +611,9 @@ void ControllerRTCItemImpl::stop()
     } else {
         execContext->deactivate_component(rtc->getObjRef());
     }
-    execContext->tick();
+    if(currentExecContextType == SIMULATION_EXECUTION_CONTEXT){
+        extTrigExecContext->tick();
+    }
 }
 
 
@@ -523,7 +628,7 @@ void ControllerRTCItemImpl::doPutProperties(PutPropertyFunction& putProperty)
 {
     FilePathProperty moduleProperty(
         moduleNameProperty,
-        { str(format(_("RT-Component module (*%1%)")) % DLL_SUFFIX) });
+        { format(_("RT-Component module (*{})"), DLL_SUFFIX) });
 
     if(baseDirectoryType.is(RTC_DIRECTORY)){
         moduleProperty.setBaseDirectory(rtcDirectory.string());
@@ -539,7 +644,7 @@ void ControllerRTCItemImpl::doPutProperties(PutPropertyFunction& putProperty)
     putProperty(_("RTC Instance name"), rtcInstanceNameProperty,
                 [&](const string& name) { self->setRTCInstanceName(name); return true; });
 
-    if(!useOnlyChoreonoidExecutionContext){
+    if(!useOnlySimulationExecutionContext){
         putProperty(_("Execution context"), execContextType,
                     [&](int which){ self->setExecContextType(which); return true; });
     }
@@ -560,7 +665,7 @@ bool ControllerRTCItemImpl::store(Archive& archive)
     archive.writeRelocatablePath("module", moduleNameProperty);
     archive.write("baseDirectory", baseDirectoryType.selectedSymbol(), DOUBLE_QUOTED);
     archive.write("instanceName", rtcInstanceNameProperty, DOUBLE_QUOTED);
-    if(!useOnlyChoreonoidExecutionContext){
+    if(!useOnlySimulationExecutionContext){
         archive.write("executionContext", execContextType.selectedSymbol(), DOUBLE_QUOTED);
     }
     archive.write("periodicRate", periodicRateProperty);
@@ -576,6 +681,7 @@ bool ControllerRTCItem::restore(const Archive& archive)
 
 bool ControllerRTCItemImpl::restore(const Archive& archive)
 {
+    DDEBUG("ControllerRTCItemImpl::restore");
     string value;
     if(archive.read("module", value) || archive.read("moduleName", value)){
         filesystem::path path(archive.expandPathVariables(value));
@@ -586,9 +692,16 @@ bool ControllerRTCItemImpl::restore(const Archive& archive)
     }
     archive.read("instanceName", rtcInstanceNameProperty);
 
-    if(!useOnlyChoreonoidExecutionContext){
+    if(!useOnlySimulationExecutionContext){
         if(archive.read("executionContext", value)){
-            execContextType.select(value);
+            if(!execContextType.select(value)){
+                // For the backward compatibility
+                if(value == "ChoreonoidExecutionContext"){
+                    execContextType.select(SIMULATION_EXECUTION_CONTEXT);
+                } else if(value == "PeriodicExecutionContext"){
+                    execContextType.select(SIMULATION_PERIODIC_EXECUTION_CONTEXT);
+                }
+            }
         }
     }
     archive.read("periodicRate", periodicRateProperty);

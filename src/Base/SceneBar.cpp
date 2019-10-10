@@ -14,12 +14,12 @@
 #include <cnoid/SceneProvider>
 #include <cnoid/SceneRenderer>
 #include <cnoid/AppConfig>
-#include <boost/format.hpp>
+#include <fmt/format.h>
 #include "gettext.h"
 
 using namespace std;
 using namespace cnoid;
-using boost::format;
+using fmt::format;
 
 namespace {
 
@@ -152,7 +152,10 @@ void SceneBarImpl::initialize()
     self->addWidget(cameraCombo);
 
     self->addButton(QIcon(":/Base/icons/viewfitting.png"), _("Move the camera to look at the objects"))
-        ->sigClicked().connect([&](){ targetSceneWidget->viewAll(); });
+        ->sigClicked().connect([&](){
+                targetSceneWidget->viewAll();
+                targetSceneWidget->setViewpointControlMode(SceneWidget::THIRD_PERSON_MODE);
+            });
 
     wireframeToggle = self->addToggleButton(
         QIcon(":/Base/icons/wireframe.png"), _("Toggle the wireframe mode"));
@@ -382,7 +385,7 @@ void SceneBarImpl::onSceneRendererCamerasChanged()
         targetRenderer->getSimplifiedCameraPathStrings(i, pathStrings);
         string label;
         if(pathStrings.empty()){
-            label = str(boost::format(_("Camera %1%")) % i);
+            label = format("Camera {}", i);
         } else if(pathStrings.size() == 1){
             label = pathStrings.front();
         } else {
@@ -411,6 +414,13 @@ void SceneBarImpl::onCameraComboCurrentIndexChanged(int index)
     rendererStateConnections.unblock();
 }
 
+void SceneBar::sceneWidget(vector<SceneWidget*>& widget)
+{
+    for(auto it=impl->sceneWidgetInfos.begin(); it!=impl->sceneWidgetInfos.end(); it++){
+        widget.push_back(it->first);
+    }
+}
+
 
 namespace {
 
@@ -418,6 +428,7 @@ class SceneCounter : public PolymorphicFunctionSet<SgNode>
 {
 public:
     int numVertices;
+    int numNormals;
     int numTriangles;
 
     SceneCounter() {
@@ -435,6 +446,9 @@ public:
                     if(mesh->hasVertices()){
                         numVertices += mesh->vertices()->size();
                     }
+                    if(mesh->hasNormals()){
+                        numNormals += mesh->normals()->size();
+                    }
                     numTriangles += mesh->numTriangles();
                 }
             });
@@ -451,6 +465,7 @@ public:
     
     void count(SgNode* node) {
         numVertices = 0;
+        numNormals = 0;
         numTriangles = 0;
         dispatch(node);
     }
@@ -463,6 +478,7 @@ void putSceneStatistics()
     
     int numSceneItems = 0;
     int totalNumVertics = 0;
+    int totalNumNormals = 0;
     int totalNumTriangles = 0;
     SceneCounter counter;
 
@@ -473,11 +489,13 @@ void putSceneStatistics()
         if(provider){
             SgNodePtr scene = provider->getScene();
             if(scene){
-                os << format(_(" Scene \"%1%\":")) % item->name() << endl;
+                os << format(_(" Scene \"{}\":"), item->name()) << endl;
                 counter.count(scene);
-                os << format(_("  Vertices: %1%\n")) % counter.numVertices;
-                os << format(_("  Triangles: %1%")) % counter.numTriangles << endl;
+                os << format(_("  Vertices: {}\n"), counter.numVertices);
+                os << format(_("  Normals: {}\n"), counter.numNormals);
+                os << format(_("  Triangles: {}"), counter.numTriangles) << endl;
                 totalNumVertics += counter.numVertices;
+                totalNumNormals += counter.numNormals;
                 totalNumTriangles += counter.numTriangles;
                 ++numSceneItems;
             }
@@ -487,9 +505,10 @@ void putSceneStatistics()
     if(!numSceneItems){
         os << _("No valid scene item is selected.") << endl;
     } else {
-        os << format(_("The total number of %1% scene items:\n")) % numSceneItems;
-        os << format(_(" Vertices: %1%\n")) % totalNumVertics;
-        os << format(_(" Triangles: %1%")) % totalNumTriangles << endl;
+        os << format(_("The total number of {} scene items:\n"), numSceneItems);
+        os << format(_(" Vertices: {}\n"), totalNumVertics);
+        os << format(_(" Normals: {}\n"), totalNumNormals);
+        os << format(_(" Triangles: {}"), totalNumTriangles) << endl;
     }
 }
 

@@ -8,6 +8,7 @@
 #include <cnoid/Archive>
 #include <cnoid/MessageView>
 #include <cnoid/MenuManager>
+#include <cnoid/ItemManager>
 #include <QHeaderView>
 #include <QCheckBox>
 #include <QRadioButton>
@@ -22,9 +23,7 @@
 #include "gettext.h"
 
 using namespace std;
-using namespace std::placeholders;
 using namespace cnoid;
-using boost::dynamic_bitset;
 
 namespace {
 const bool TRACE_FUNCTIONS = false;
@@ -73,13 +72,13 @@ public:
 
         LinkGroupPtr linkGroup;
 
-        dynamic_bitset<> selection;
+        vector<bool> selection;
         vector<int> selectedLinkIndices;
         Signal<void()> sigSelectionChanged;
 
         bool needTreeExpansionUpdate;
-        dynamic_bitset<> linkExpansions;
-        std::set<string> expandedParts;
+        vector<bool> linkExpansions;
+        set<string> expandedParts;
                 
         Connection detachedFromRootConnection;
 
@@ -91,15 +90,15 @@ public:
         }
         void setNumLinks(int n, bool doInitialize) {
             if(doInitialize){
-                selection.reset();
-                linkExpansions.set();
+                selection.clear();
+                linkExpansions.clear();
                 expandedParts.clear();
             }
             selection.resize(n, false);
             linkExpansions.resize(n, true);
         }
     };
-    typedef std::shared_ptr<BodyItemInfo> BodyItemInfoPtr;
+    typedef shared_ptr<BodyItemInfo> BodyItemInfoPtr;
 
     typedef map<BodyItemPtr, BodyItemInfoPtr> BodyItemInfoMap;
     BodyItemInfoMap bodyItemInfoCache;
@@ -111,7 +110,7 @@ public:
 
     Signal<void()> dummySigSelectionChanged; // never emitted
     vector<int> emptyLinkIndices;
-    dynamic_bitset<> emptySelection;
+    vector<bool> emptySelection;
 
     void initialize();
     void enableCache(bool on);
@@ -135,8 +134,8 @@ public:
     void onSelectionChanged();
     Signal<void()>& sigSelectionChangedOf(BodyItem* bodyItem);
     int selectedLinkIndex(BodyItem* bodyItem) const;
-    const std::vector<int>& selectedLinkIndices(BodyItem* bodyItem);
-    const boost::dynamic_bitset<>& linkSelection(BodyItem* bodyItem);
+    const vector<int>& selectedLinkIndices(BodyItem* bodyItem);
+    const vector<bool>& linkSelection(BodyItem* bodyItem);
     void onCustomContextMenuRequested(const QPoint& pos);
     void setExpansionState(const LinkTreeItem* item, bool on);
     void onItemExpanded(QTreeWidgetItem* treeWidgetItem);
@@ -274,22 +273,14 @@ void LinkTreeWidgetImpl::initialize()
     self->setHorizontalScrollMode(QAbstractItemView::ScrollPerPixel);
 
     nameColumn = self->addColumn(_("Link"));
-#if QT_VERSION < QT_VERSION_CHECK(5, 0, 0)
-    header->setResizeMode(nameColumn, QHeaderView::Stretch);
-#else
     header->setSectionResizeMode(nameColumn, QHeaderView::Stretch);
-#endif
     self->setColumnDataFunction(nameColumn, &nameData);
 
     jointIdColumn = self->addColumn(_("ID"));
     self->setColumnDataFunction(jointIdColumn, &jointIdData);
-#if QT_VERSION < QT_VERSION_CHECK(5, 0, 0)
-    header->setResizeMode(jointIdColumn, QHeaderView::ResizeToContents);
-#else
     header->setSectionResizeMode(jointIdColumn, QHeaderView::ResizeToContents);
-#endif
     
-    headerItem->setTextAlignment(jointIdColumn, Qt::AlignHCenter);
+    headerItem->setTextAlignment(jointIdColumn, Qt::AlignCenter);
     self->moveVisualColumnIndex(jointIdColumn, 0);
 
     QObject::connect(self, SIGNAL(itemChanged(QTreeWidgetItem*, int)),
@@ -315,7 +306,7 @@ void LinkTreeWidgetImpl::initialize()
     listingMode = LinkTreeWidget::LINK_LIST;
     listingModeCombo.setCurrentIndex(listingMode);
     listingModeCombo.sigCurrentIndexChanged().connect(
-        std::bind(&LinkTreeWidgetImpl::onListingModeChanged, this, _1));
+        [&](int index){ onListingModeChanged(index); });
 }
 
 
@@ -381,11 +372,7 @@ int LinkTreeWidget::addColumn()
     impl->columnInfos.push_back(LinkTreeWidgetImpl::ColumnInfo());
     setColumnCount(impl->columnInfos.size());
     impl->headerItem->setText(column, QString());
-#if QT_VERSION < QT_VERSION_CHECK(5, 0, 0)
-    header()->setResizeMode(column, QHeaderView::ResizeToContents);
-#else
     header()->setSectionResizeMode(column, QHeaderView::ResizeToContents);
-#endif
     return column;
 }
 
@@ -394,42 +381,26 @@ int LinkTreeWidget::addColumn(const QString& headerText)
 {
     int column = addColumn();
     impl->headerItem->setText(column, headerText);
-#if QT_VERSION < QT_VERSION_CHECK(5, 0, 0)
-    header()->setResizeMode(column, QHeaderView::ResizeToContents);
-#else
     header()->setSectionResizeMode(column, QHeaderView::ResizeToContents);
-#endif
     return column;
 }
 
 
 void LinkTreeWidget::setColumnStretchResizeMode(int column)
 {
-#if QT_VERSION < QT_VERSION_CHECK(5, 0, 0)
-    header()->setResizeMode(column, QHeaderView::Stretch);
-#else
     header()->setSectionResizeMode(column, QHeaderView::Stretch);
-#endif
 }
 
 
 void LinkTreeWidget::setColumnInteractiveResizeMode(int column)
 {
-#if QT_VERSION < QT_VERSION_CHECK(5, 0, 0)
-    header()->setResizeMode(column, QHeaderView::Interactive);
-#else
     header()->setSectionResizeMode(column, QHeaderView::Interactive);
-#endif
 }
 
 
 void LinkTreeWidget::setColumnResizeToContentsMode(int column)
 {
-#if QT_VERSION < QT_VERSION_CHECK(5, 0, 0)
-    header()->setResizeMode(column, QHeaderView::ResizeToContents);
-#else
     header()->setSectionResizeMode(column, QHeaderView::ResizeToContents);
-#endif
 }
 
                     
@@ -546,14 +517,23 @@ void LinkTreeWidget::fixListingMode(bool on)
 LinkTreeWidgetImpl::BodyItemInfoPtr LinkTreeWidgetImpl::getBodyItemInfo(BodyItem* bodyItem)
 {
     BodyItemInfoPtr info;
+    bool isInfoForNewBody = false;
 
     if(bodyItem){
         if(bodyItem == currentBodyItem){
             info = currentBodyItemInfo;
         } else if(isCacheEnabled){
-            BodyItemInfoMap::iterator p = bodyItemInfoCache.find(bodyItem);
+            auto p = bodyItemInfoCache.find(bodyItem);
             if(p != bodyItemInfoCache.end()){
                 info = p->second;
+            } else if(isCacheEnabled){
+                auto originalItem = ItemManager::findOriginalItemForReloadedItem(bodyItem);
+                auto q = bodyItemInfoCache.find(dynamic_cast<BodyItem*>(originalItem));
+                if(q != bodyItemInfoCache.end()){
+                    info = q->second;
+                    isInfoForNewBody = true;
+                    bodyItemInfoCache.erase(q);
+                }
             }
         }
 
@@ -562,9 +542,13 @@ LinkTreeWidgetImpl::BodyItemInfoPtr LinkTreeWidgetImpl::getBodyItemInfo(BodyItem
                 bodyItemInfoCache.clear();
             }
             info = std::make_shared<BodyItemInfo>();
+            isInfoForNewBody = true;
+        }
+
+        if(isInfoForNewBody){
             info->linkGroup = LinkGroup::create(*bodyItem->body());
             info->detachedFromRootConnection = bodyItem->sigDetachedFromRoot().connect(
-                std::bind(&LinkTreeWidgetImpl::onBodyItemDetachedFromRoot, this, bodyItem));
+                [this, bodyItem](){ onBodyItemDetachedFromRoot(bodyItem); });
             bodyItemInfoCache[bodyItem] = info;
         }
 
@@ -579,6 +563,10 @@ LinkTreeWidgetImpl::BodyItemInfoPtr LinkTreeWidgetImpl::getBodyItemInfo(BodyItem
 
 void LinkTreeWidgetImpl::onBodyItemDetachedFromRoot(BodyItem* bodyItem)
 {
+    if(TRACE_FUNCTIONS){
+        cout << "LinkTreeWidgetImpl::onBodyItemDetachedFromRoot(" << bodyItem->name() << ")" << endl;
+    }
+    
     if(currentBodyItem == bodyItem){
         setCurrentBodyItem(0, false);
     }
@@ -627,7 +615,8 @@ void LinkTreeWidgetImpl::clearTreeItems()
 void LinkTreeWidgetImpl::setCurrentBodyItem(BodyItem* bodyItem, bool forceTreeUpdate)
 {
     if(TRACE_FUNCTIONS){
-        cout << "LinkTreeWidgetImpl::setCurrentBodyItem()" << endl;
+        cout << "LinkTreeWidgetImpl::setCurrentBodyItem(" << (bodyItem ? bodyItem->name() : string("0"))
+        << ", " << forceTreeUpdate << ")" << endl;
     }
 
     bool currentChanged = bodyItem != currentBodyItem;
@@ -687,6 +676,8 @@ void LinkTreeWidgetImpl::setCurrentBodyItem(BodyItem* bodyItem, bool forceTreeUp
             }
 
             addCustomRows();
+
+            restoreTreeState();
         }
 
         sigUpdateRequest(true);
@@ -727,8 +718,7 @@ void LinkTreeWidgetImpl::restoreTreeStateSub(QTreeWidgetItem* parentItem)
         if(item){
             const Link* link = item->link();
             if(link){
-                const dynamic_bitset<>& selection = currentBodyItemInfo->selection;
-                item->setSelected(selection[link->index()]);
+                item->setSelected(currentBodyItemInfo->selection[link->index()]);
             }
         
             if(item->childCount() > 0){ // Tree
@@ -898,13 +888,13 @@ void LinkTreeWidgetImpl::onSelectionChanged()
     }
 
     if(currentBodyItem){
-        currentBodyItemInfo->selection.reset();
-
+        auto& selection = currentBodyItemInfo->selection;
+        std::fill(selection.begin(), selection.end(), false);
         QList<QTreeWidgetItem*> selected = self->selectedItems();
         for(int i=0; i < selected.size(); ++i){
             LinkTreeItem* item = dynamic_cast<LinkTreeItem*>(selected[i]);
             if(item && item->link()){
-                currentBodyItemInfo->selection[item->link()->index()] = true;
+                selection[item->link()->index()] = true;
             }
         }
         currentBodyItemInfo->sigSelectionChanged();
@@ -966,9 +956,11 @@ int LinkTreeWidgetImpl::selectedLinkIndex(BodyItem* bodyItem) const
 {
     BodyItemInfoPtr info = const_cast<LinkTreeWidgetImpl*>(this)->getBodyItemInfo(bodyItem);
     if(info){
-        dynamic_bitset<>::size_type index = info->selection.find_first();
-        if(index != dynamic_bitset<>::npos){
-            return index;
+        const auto& selection = info->selection;
+        for(size_t i=0; i < selection.size(); ++i){
+            if(selection[i]){
+                return i;
+            }
         }
     }
     return -1;
@@ -987,12 +979,12 @@ const std::vector<int>& LinkTreeWidget::selectedLinkIndices(BodyItem* bodyItem)
 }
 
 
-const std::vector<int>& LinkTreeWidgetImpl::selectedLinkIndices(BodyItem* bodyItem)
+const vector<int>& LinkTreeWidgetImpl::selectedLinkIndices(BodyItem* bodyItem)
 {
     BodyItemInfoPtr info = getBodyItemInfo(bodyItem);
     if(info){
         info->selectedLinkIndices.clear();
-        const dynamic_bitset<>& selection = info->selection;
+        const auto& selection = info->selection;
         for(size_t i=0; i < selection.size(); ++i){
             if(selection[i]){
                 info->selectedLinkIndices.push_back(i);
@@ -1004,19 +996,19 @@ const std::vector<int>& LinkTreeWidgetImpl::selectedLinkIndices(BodyItem* bodyIt
 }
 
 
-const boost::dynamic_bitset<>& LinkTreeWidget::linkSelection()
+const std::vector<bool>& LinkTreeWidget::linkSelection()
 {
     return impl->linkSelection(impl->currentBodyItem);
 }
 
 
-const boost::dynamic_bitset<>& LinkTreeWidget::linkSelection(BodyItem* bodyItem)
+const std::vector<bool>& LinkTreeWidget::linkSelection(BodyItem* bodyItem)
 {
     return impl->linkSelection(bodyItem);
 }
 
 
-const boost::dynamic_bitset<>& LinkTreeWidgetImpl::linkSelection(BodyItem* bodyItem)
+const vector<bool>& LinkTreeWidgetImpl::linkSelection(BodyItem* bodyItem)
 {
     BodyItemInfoPtr info = getBodyItemInfo(bodyItem);
     if(info){
@@ -1117,11 +1109,12 @@ bool LinkTreeWidgetImpl::makeSingleSelection(BodyItem* bodyItem, int linkIndex)
     if(!info){
         return false;
     }
-    
-    if(static_cast<size_t>(linkIndex) < info->selection.size()){
-        if(!info->selection[linkIndex] || info->selection.count() > 1){
-            info->selection.reset();
-            info->selection.set(linkIndex);
+
+    auto& selection = info->selection;
+    if(static_cast<size_t>(linkIndex) < selection.size()){
+        if(!selection[linkIndex] || std::count(selection.begin(), selection.end(), true) > 1){
+            std::fill(selection.begin(), selection.end(), false);
+            selection[linkIndex] = true;
             
             if(bodyItem == currentBodyItem){
                 restoreTreeState();
@@ -1171,11 +1164,15 @@ bool LinkTreeWidgetImpl::storeState(Archive& archive)
         for(BodyItemInfoMap::iterator it = bodyItemInfoCache.begin(); it != bodyItemInfoCache.end(); ++it){
 
             BodyItem* bodyItem = it->first;
+            ValueNodePtr id = archive.getItemId(bodyItem);
+            if(!id){ // The item is not in the item tree
+                continue;
+            }
             BodyItemInfo& info = *it->second;
             MappingPtr bodyItemNode = new Mapping();
             bool isEmpty = true;
 
-            bodyItemNode->insert("id", archive.getItemId(bodyItem));
+            bodyItemNode->insert("id", id);
             
             const vector<int>& indices = selectedLinkIndices(bodyItem);
             if(!indices.empty()){
@@ -1187,12 +1184,13 @@ bool LinkTreeWidgetImpl::storeState(Archive& archive)
                 isEmpty = false;
             }
 
-            int n = info.linkExpansions.size();
-            int m = n - info.linkExpansions.count();
+            auto exps = info.linkExpansions;
+            int n = exps.size();
+            int m = n - std::count(exps.begin(), exps.end(), true);
             if(m > 0){
                 Listing& nonExpanded = *bodyItemNode->createFlowStyleListing("nonExpandedLinks");
                 for(int i=0; i < n; ++i){
-                    if(!info.linkExpansions[i]){
+                    if(!exps[i]){
                         nonExpanded.append(i, 20, m);
                     }
                 }
@@ -1224,7 +1222,7 @@ bool LinkTreeWidgetImpl::storeState(Archive& archive)
 
 bool LinkTreeWidget::restoreState(const Archive& archive)
 {
-    archive.addPostProcess(std::bind(&LinkTreeWidgetImpl::restoreState, impl, std::ref(archive)));
+    archive.addPostProcess([&](){ impl->restoreState(archive); });
     return true;
 }
 

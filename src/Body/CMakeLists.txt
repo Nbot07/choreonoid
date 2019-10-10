@@ -7,16 +7,29 @@ set(target CnoidBody)
 
 set(sources
   Body.cpp
-  VRMLBody.cpp
-  LinkTraverse.cpp
+  BodyCloneMap.cpp
   Link.cpp
+  LinkTraverse.cpp
   LinkPath.cpp
   JointPath.cpp
   Jacobian.cpp
+  BodyHandler.cpp
+  BodyHandlerManager.cpp
+  CustomJointPathBase.cpp
+  BodyCustomizerInterface.cpp
   Material.cpp
   ContactMaterial.cpp
   MaterialTable.cpp
+  SceneBody.cpp
+  SceneDevice.cpp
+  AbstractBodyLoader.cpp
+  BodyLoader.cpp
+  YAMLBodyLoader.cpp
   Device.cpp
+  HolderDevice.cpp
+  AttachmentDevice.cpp
+  DigitalIoDevice.cpp
+  IoConnectionMap.cpp
   ForceSensor.cpp
   RateGyroSensor.cpp
   AccelerationSensor.cpp
@@ -27,13 +40,18 @@ set(sources
   Light.cpp
   PointLight.cpp
   SpotLight.cpp
+  MarkerDevice.cpp
   MultiDeviceStateSeq.cpp
   ExtraBodyStateAccessor.cpp
-  SceneBody.cpp
-  SceneDevice.cpp
   SceneCollision.cpp
+  InverseKinematics.cpp
   CompositeIK.cpp
   PinDragIK.cpp
+  BodyManipulatorManager.cpp
+  ManipulatorPosition.cpp
+  CoordinateFrameSet.cpp
+  CoordinateFrameContainer.cpp
+  CoordinateFrameSetGroup.cpp
   LinkGroup.cpp
   LeggedBodyHelper.cpp
   BodyCollisionDetector.cpp
@@ -41,7 +59,6 @@ set(sources
   BodyMotion.cpp
   BodyMotionPoseProvider.cpp
   BodyState.cpp
-  BodyCustomizerInterface.cpp
   ZMPSeq.cpp
   ForwardDynamics.cpp
   ForwardDynamicsABM.cpp
@@ -52,11 +69,8 @@ set(sources
   ConstraintForceSolver.cpp
   InverseDynamics.cpp
   PenetrationBlocker.cpp
-  AbstractBodyLoader.cpp
-  BodyLoader.cpp
-  YAMLBodyLoader.cpp
   VRMLBodyLoader.cpp
-  VRMLBodyWriter.cpp
+  VRMLBody.cpp
   PoseProviderToBodyMotionConverter.cpp
   BodyMotionUtil.cpp
   ControllerIO.cpp
@@ -66,12 +80,16 @@ set(sources
 
 set(headers
   Body.h
-  VRMLBody.h
+  BodyCloneMap.h
+  BodyHandler.h
+  BodyHandlerManager.h
+  CustomJointPathHandler.h
+  CustomJointPathBase.h
   BodyCustomizerInterface.h
+  VRMLBody.h
   AbstractBodyLoader.h
   VRMLBodyLoader.h
   BodyLoader.h
-  VRMLBodyWriter.h
   ZMPSeq.h
   Link.h
   LinkTraverse.h
@@ -86,6 +104,10 @@ set(headers
   MultiDeviceStateSeq.h
   Device.h
   DeviceList.h
+  HolderDevice.h
+  AttachmentDevice.h
+  DigitalIoDevice.h
+  IoConnectionMap.h
   ForceSensor.h
   RateGyroSensor.h
   AccelerationSensor.h
@@ -96,12 +118,19 @@ set(headers
   Light.h
   PointLight.h
   SpotLight.h
+  MarkerDevice.h
   SceneBody.h
   SceneDevice.h
   SceneCollision.h
   InverseKinematics.h
   CompositeIK.h
+  CompositeBodyIK.h
   PinDragIK.h
+  BodyManipulatorManager.h
+  ManipulatorPosition.h
+  CoordinateFrameSet.h
+  CoordinateFrameContainer.h
+  CoordinateFrameSetGroup.h
   LeggedBodyHelper.h
   PenetrationBlocker.h
   ForwardDynamics.h
@@ -138,28 +167,38 @@ endif()
 
 apply_common_setting_for_library(${target} "${headers}")
 
-# Body customizer
-function(add_cnoid_body_customizer)
-
+# Body handler
+function(add_cnoid_body_handler)
   set(target ${ARGV0})
   list(REMOVE_AT ARGV 0)
   add_library(${target} SHARED ${ARGV})
+  set_target_properties(${target} PROPERTIES
+    PREFIX "" LIBRARY_OUTPUT_DIRECTORY ${PROJECT_BINARY_DIR}/${CNOID_PLUGIN_SUBDIR}/bodyhandler)
+  if(ENABLE_INSTALL_RPATH)
+    set_target_properties(${target} PROPERTIES INSTALL_RPATH "$ORIGIN")
+  endif()
+  target_link_libraries(${target} CnoidBody)
+  install(TARGETS ${target}
+    RUNTIME DESTINATION ${CNOID_PLUGIN_SUBDIR}/bodyhandler CONFIGURATIONS Release Debug RelWithDebInfo MinSizeRel
+    LIBRARY DESTINATION ${CNOID_PLUGIN_SUBDIR}/bodyhandler CONFIGURATIONS Release Debug RelWithDebInfo MinSizeRel)
+endfunction()
 
+# Body customizer (deprecated)
+function(add_cnoid_body_customizer)
+  set(target ${ARGV0})
+  list(REMOVE_AT ARGV 0)
+  add_library(${target} SHARED ${ARGV})
   set_target_properties(${target} PROPERTIES
     PREFIX ""
     COMPILE_DEFINITIONS "CNOID_BODY_CUSTOMIZER"
     LIBRARY_OUTPUT_DIRECTORY ${PROJECT_BINARY_DIR}/${CNOID_PLUGIN_SUBDIR}/customizer)
-
   if(ENABLE_INSTALL_RPATH)
     set_target_properties(${target} PROPERTIES INSTALL_RPATH "$ORIGIN")
   endif()
-
   target_link_libraries(${target} CnoidBase)
-
   install(TARGETS ${target}
     RUNTIME DESTINATION ${CNOID_PLUGIN_SUBDIR}/customizer CONFIGURATIONS Release Debug RelWithDebInfo MinSizeRel
     LIBRARY DESTINATION ${CNOID_PLUGIN_SUBDIR}/customizer CONFIGURATIONS Release Debug RelWithDebInfo MinSizeRel)
-
 endfunction()
 
 set(BODY_CUSTOMIZERS ${BODY_CUSTOMIZERS} CACHE FILEPATH "Source files of body customizers")
@@ -203,11 +242,7 @@ install(
   FILES_MATCHING PATTERN "*" EXCLUDE)
 
 if(ENABLE_PYTHON)
-  if(USE_PYBIND11)
-    add_subdirectory(pybind11)
-  elseif(USE_BOOST_PYTHON)
-    add_subdirectory(boostpython)
-  endif()
+  add_subdirectory(pybind11)
 endif()
 
 add_subdirectory(lua)

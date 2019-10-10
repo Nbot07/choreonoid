@@ -1,12 +1,7 @@
 #!/bin/sh
 
-hg archive \
--t zip \
--X path:cmake_modules \
--X path:admin \
--X path:src/junk \
--X path:.hgtags \
--X path:.hg_archival.txt \
--X path:ext/sample/GRobotPlugin2 \
--X path:misc/script/install-requisites-ubuntu-10.04.sh \
-choreonoid-@CNOID_FULL_VERSION@.zip
+mkdir choreonoid-@CNOID_FULL_VERSION@
+git archive v@CNOID_FULL_VERSION@ | tar -x -C choreonoid-@CNOID_FULL_VERSION@
+rm choreonoid-@CNOID_FULL_VERSION@/.??*
+zip -q choreonoid-@CNOID_FULL_VERSION@.zip -r choreonoid-@CNOID_FULL_VERSION@
+rm -fr choreonoid-@CNOID_FULL_VERSION@

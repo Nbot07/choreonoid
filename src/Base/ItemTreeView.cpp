@@ -5,16 +5,19 @@
 #include "ItemTreeView.h"
 #include "Item.h"
 #include "RootItem.h"
+#include "ProjectManager.h"
 #include "ItemManager.h"
 #include "ViewManager.h"
 #include "MenuManager.h"
 #include "AppConfig.h"
 #include "Archive.h"
 #include "TreeWidget.h"
+#include "AppUtil.h"
 #include <cnoid/ConnectionSet>
 #include <QBoxLayout>
 #include <QMouseEvent>
 #include <QHeaderView>
+#include <QModelIndex>
 #include <set>
 #include <unordered_map>
 #include "gettext.h"
@@ -24,7 +27,7 @@ using namespace cnoid;
 
 namespace {
 
-ItemTreeView* itemTreeView = 0;
+ItemTreeView* itemTreeView = nullptr;
 
 typedef Signal<void(bool isChecked)> SigCheckToggled;
 typedef std::shared_ptr<SigCheckToggled> SigCheckToggledPtr;
@@ -35,13 +38,14 @@ class ItvItem : public QTreeWidgetItem
 public:
     Item* item;
     ItemTreeViewImpl* itemTreeViewImpl;
-    bool isExpandedBeforeRemoving;
     vector<SigCheckToggledPtr> sigCheckToggledList;
+    SigCheckToggled sigAnyColumnCheckedToggled;
+    bool isExpandedBeforeRemoving;
 
     ItvItem(Item* item, ItemTreeViewImpl* itemTreeViewImpl);
     virtual ~ItvItem();
-    virtual QVariant data(int column, int role) const;
-    virtual void setData(int column, int role, const QVariant& value);
+    virtual QVariant data(int column, int role) const override;
+    virtual void setData(int column, int role, const QVariant& value) override;
     SigCheckToggled* sigCheckToggled(int id);
     SigCheckToggled& getOrCreateSigCheckToggled(int id);
 };
@@ -68,15 +72,17 @@ class ItemTreeViewImpl : public TreeWidget
 public:
     ItemTreeView* self;
     RootItemPtr rootItem;
+    ProjectManager* projectManager;
 
     unordered_map<Item*, ItvItem*> itemToItvItemMap;
 
-    int isProceccingSlotForRootItemSignals;
+    int isProcessingSlotForRootItemSignals;
     ScopedConnectionSet connectionsFromRootItem;
     set<Item*> itemsBeingOperated;
 
     vector<CheckColumnPtr> checkColumns;
 
+    Signal<void(Item* item, bool isChecked)> sigAnyColumnCheckedToggled;
     Signal<void(Item* item, bool isChecked)> sigCheckToggledForInvalidId;
     Signal<void(bool isChecked)> sigCheckToggledForInvalidItem;
     Signal<void(const ItemList<>&)> sigSelectionChanged;
@@ -94,14 +100,15 @@ public:
     ItemTreeViewImpl(ItemTreeView* self, RootItem* rootItem);
     ~ItemTreeViewImpl();
 
+    void clearAllItemLists();
     int addCheckColumn();
     void initializeCheckState(QTreeWidgetItem* item, int column);
     void updateCheckColumnToolTipIter(QTreeWidgetItem* item, int column, const QString& tooltip);
     void showCheckColumn(int id, bool on);
     void releaseCheckColumn(int id);
         
-    virtual void mousePressEvent(QMouseEvent* event);
-    virtual void keyPressEvent(QKeyEvent* event);
+    virtual void mousePressEvent(QMouseEvent* event) override;
+    virtual void keyPressEvent(QKeyEvent* event) override;
         
     ItvItem* getItvItem(Item* item);
     ItvItem* getOrCreateItvItem(Item* item);
@@ -111,11 +118,11 @@ public:
     void onSubTreeRemoved(Item* item, bool isMoving);
     void onItemAssigned(Item* assigned, Item* srcItem);
 
-    virtual void dropEvent(QDropEvent* event);
+    virtual void dropEvent(QDropEvent* event) override;
         
     void onRowsAboutToBeRemoved(const QModelIndex& parent, int start, int end);
     void onRowsInserted(const QModelIndex& parent, int start, int end);
-    virtual bool dropMimeData(QTreeWidgetItem* parent, int index, const QMimeData* data, Qt::DropAction action);
+    virtual bool dropMimeData(QTreeWidgetItem* parent, int index, const QMimeData* data, Qt::DropAction action) override;
     void onSelectionChanged();
     bool isItemSelected(Item* item);
     bool selectItem(Item* item, bool select);
@@ -188,9 +195,9 @@ QVariant ItvItem::data(int column, int role) const
 
 void ItvItem::setData(int column, int role, const QVariant& value)
 {
-    QTreeWidgetItem::setData(column, role, value);
-    
     if(column == 0){
+        QTreeWidgetItem::setData(column, role, value);
+
         if(role == Qt::DisplayRole || role == Qt::EditRole){
             if(value.type() == QVariant::String){
                 if(!value.toString().isEmpty()){
@@ -199,15 +206,30 @@ void ItvItem::setData(int column, int role, const QVariant& value)
             }
         }
     } else if(column >= 1 && role == Qt::CheckStateRole){
+        bool checked = ((Qt::CheckState)value.toInt() == Qt::Checked);
+        bool wasAnyColumnChecked = itemTreeViewImpl->isItemChecked(item, ItemTreeView::ID_ANY);
+
+        QTreeWidgetItem::setData(column, role, value);
+
         const unsigned int id = column - 1;
         if(id < itemTreeViewImpl->checkColumns.size()){
             CheckColumnPtr& cc = itemTreeViewImpl->checkColumns[id];
             cc->needToUpdateCheckedItemList = true;
-            const bool checked = ((Qt::CheckState)value.toInt() == Qt::Checked);
             cc->sigCheckToggled(item, checked);
             SigCheckToggled* sig = sigCheckToggled(id);
             if(sig){
                 (*sig)(checked);
+            }
+            if(checked){
+                if(!wasAnyColumnChecked){
+                    itemTreeViewImpl->sigAnyColumnCheckedToggled(item, true);
+                    sigAnyColumnCheckedToggled(true);
+                }
+            } else {
+                if(!itemTreeViewImpl->isItemChecked(item, ItemTreeView::ID_ANY)){
+                    itemTreeViewImpl->sigAnyColumnCheckedToggled(item, false);
+                    sigAnyColumnCheckedToggled(false);
+                }
             }
         }
     }
@@ -216,22 +238,27 @@ void ItvItem::setData(int column, int role, const QVariant& value)
 
 SigCheckToggled* ItvItem::sigCheckToggled(int id)
 {
-    if(id < static_cast<int>(sigCheckToggledList.size())){
-        return sigCheckToggledList[id].get();
+    if(id >= 0){
+        if(id < static_cast<int>(sigCheckToggledList.size())){
+            return sigCheckToggledList[id].get();
+        }
     }
-    return 0;
+    return nullptr;
 }
 
 
 SigCheckToggled& ItvItem::getOrCreateSigCheckToggled(int id)
 {
-    if(id >= static_cast<int>(sigCheckToggledList.size())){
-        sigCheckToggledList.resize(id + 1);
+    if(id >= 0){
+        if(id >= static_cast<int>(sigCheckToggledList.size())){
+            sigCheckToggledList.resize(id + 1);
+        }
+        if(!sigCheckToggledList[id]){
+            sigCheckToggledList[id] = std::make_shared<SigCheckToggled>();
+        }
+        return *sigCheckToggledList[id];
     }
-    if(!sigCheckToggledList[id]){
-        sigCheckToggledList[id] = std::make_shared<SigCheckToggled>();
-    }
-    return *sigCheckToggledList[id];
+    return *sigCheckToggledList[0];
 }
 
 
@@ -281,18 +308,15 @@ void ItemTreeView::construct(RootItem* rootItem)
 
 ItemTreeViewImpl::ItemTreeViewImpl(ItemTreeView* self, RootItem* rootItem)
     : self(self),
-      rootItem(rootItem)
+      rootItem(rootItem),
+      projectManager(ProjectManager::instance())
 {
-    isProceccingSlotForRootItemSignals = 0;
+    isProcessingSlotForRootItemSignals = 0;
     isDropping = false;
     
     setColumnCount(1);
 
-#if QT_VERSION < QT_VERSION_CHECK(5, 0, 0)
-    header()->setResizeMode(0, QHeaderView::Stretch);
-#else
     header()->setSectionResizeMode(0, QHeaderView::Stretch);
-#endif
     header()->setMinimumSectionSize(0);
 
     // default check column
@@ -318,10 +342,12 @@ ItemTreeViewImpl::ItemTreeViewImpl(ItemTreeView* self, RootItem* rootItem)
     connectionsFromRootItem.add(
         rootItem->sigItemAssigned().connect([&](Item* assigned, Item* srcItem){ onItemAssigned(assigned, srcItem); }));
 
-    QObject::connect(model(), SIGNAL(rowsAboutToBeRemoved(const QModelIndex&, int, int)),
-                     self, SLOT(onRowsAboutToBeRemoved(const QModelIndex&, int, int)));
-    QObject::connect(model(), SIGNAL(rowsInserted(const QModelIndex&, int, int)),
-                     self, SLOT(onRowsInserted(const QModelIndex&, int, int)));
+    sigRowsAboutToBeRemoved().connect(
+        [&](const QModelIndex& parent, int start, int end){
+            onRowsAboutToBeRemoved(parent, start, end); });
+    sigRowsInserted().connect(
+        [&](const QModelIndex& parent, int start, int end){
+            onRowsInserted(parent, start, end);  });
 
     popupMenu = new Menu(this);
     menuManager.setTopMenu(popupMenu);
@@ -359,6 +385,8 @@ ItemTreeViewImpl::ItemTreeViewImpl(ItemTreeView* self, RootItem* rootItem)
     if(config->read("fontZoom", storedFontPointSizeDiff)){
         zoomFontSize(storedFontPointSizeDiff);
     }
+
+    cnoid::sigAboutToQuit().connect([&](){ clearAllItemLists(); });
 }
 
 
@@ -371,6 +399,14 @@ ItemTreeView::~ItemTreeView()
 ItemTreeViewImpl::~ItemTreeViewImpl()
 {
 
+}
+
+
+void ItemTreeViewImpl::clearAllItemLists()
+{
+    emptyItemList.clear();
+    selectedItemList.clear();
+    copiedItemList.clear();
 }
 
 
@@ -391,11 +427,7 @@ int ItemTreeViewImpl::addCheckColumn()
 
     checkColumns[id] = new CheckColumn;
 
-#if QT_VERSION < QT_VERSION_CHECK(5, 0, 0)
-    header()->setResizeMode(id + 1, QHeaderView::ResizeToContents);
-#else
     header()->setSectionResizeMode(id + 1, QHeaderView::ResizeToContents);
-#endif
 
     initializeCheckState(invisibleRootItem(), id + 1);
     
@@ -539,7 +571,7 @@ void ItemTreeViewImpl::keyPressEvent(QKeyEvent* event)
 
 ItvItem* ItemTreeViewImpl::getItvItem(Item* item)
 {
-    ItvItem* itvItem = 0;
+    ItvItem* itvItem = nullptr;
     auto iter = itemToItvItemMap.find(item);
     if(iter != itemToItvItemMap.end()){
         itvItem = iter->second;
@@ -570,7 +602,7 @@ void ItemTreeViewImpl::onSubTreeAddedOrMoved(Item* item)
         return;
     }
     
-    isProceccingSlotForRootItemSignals++;
+    isProcessingSlotForRootItemSignals++;
     
     Item* parentItem = item->parentItem();
     if(parentItem){
@@ -584,7 +616,7 @@ void ItemTreeViewImpl::onSubTreeAddedOrMoved(Item* item)
         }
     }
 
-    isProceccingSlotForRootItemSignals--;
+    isProcessingSlotForRootItemSignals--;
 }
 
 
@@ -603,9 +635,9 @@ void ItemTreeViewImpl::insertItem(QTreeWidgetItem* parentTwItem, Item* item, Ite
     if(!inserted){
         parentTwItem->addChild(itvItem);
     }
-        
-    if(!parentTwItem->isExpanded()){
-        if(!item->isSubItem()){
+
+    if(!ProjectManager::isProjectBeingLoaded()){
+        if(!parentTwItem->isExpanded() && !item->isSubItem()){
             parentTwItem->setExpanded(true);
         }
     }
@@ -622,7 +654,7 @@ void ItemTreeViewImpl::onSubTreeRemoved(Item* item, bool isMoving)
         return;
     }
     
-    isProceccingSlotForRootItemSignals++;
+    isProcessingSlotForRootItemSignals++;
     
     ItvItem* itvItem = getItvItem(item);
     if(itvItem){
@@ -635,7 +667,7 @@ void ItemTreeViewImpl::onSubTreeRemoved(Item* item, bool isMoving)
         delete itvItem;
     }
 
-    isProceccingSlotForRootItemSignals--;
+    isProcessingSlotForRootItemSignals--;
 }
 
 
@@ -647,16 +679,12 @@ void ItemTreeViewImpl::dropEvent(QDropEvent* event)
 }
     
 
-void ItemTreeView::onRowsAboutToBeRemoved(const QModelIndex& parent, int start, int end)
-{
-    if(impl->isProceccingSlotForRootItemSignals == 0){
-        impl->onRowsAboutToBeRemoved(parent, start, end);
-    }
-}
-
-
 void ItemTreeViewImpl::onRowsAboutToBeRemoved(const QModelIndex& parent, int start, int end)
 {
+    if(isProcessingSlotForRootItemSignals){
+        return;
+    }
+
     QTreeWidgetItem* parentTwItem = itemFromIndex(parent);
     if(!parentTwItem){
         parentTwItem = invisibleRootItem();
@@ -685,16 +713,12 @@ void ItemTreeViewImpl::onRowsAboutToBeRemoved(const QModelIndex& parent, int sta
 }
 
 
-void ItemTreeView::onRowsInserted(const QModelIndex& parent, int start, int end)
-{
-    if(impl->isProceccingSlotForRootItemSignals == 0){
-        impl->onRowsInserted(parent, start, end);
-    }
-}
-
-
 void ItemTreeViewImpl::onRowsInserted(const QModelIndex& parent, int start, int end)
 {
+    if(isProcessingSlotForRootItemSignals){
+        return;
+    }
+    
     QTreeWidgetItem* parentTwItem = itemFromIndex(parent);
     if(parentTwItem){
         parentTwItem->setExpanded(true);
@@ -807,7 +831,13 @@ bool ItemTreeViewImpl::selectItem(Item* item, bool select)
     ItvItem* itvItem = getItvItem(item);
     if(itvItem){
         QModelIndex index = indexFromItem(itvItem);
-        selectionModel()->select(index, (select ? QItemSelectionModel::Select : QItemSelectionModel::Deselect));
+        QItemSelectionModel::SelectionFlags flags;
+        if(select){
+            flags = QItemSelectionModel::Select;
+        } else {
+            flags = QItemSelectionModel::Deselect | QItemSelectionModel::Current;
+        }
+        selectionModel()->select(index, flags);
         return select;
     }
     return false;
@@ -836,11 +866,20 @@ bool ItemTreeViewImpl::isItemChecked(Item* item, int id)
 {
     ItvItem* itvItem = getItvItem(item);
     if(itvItem){
-        return (itvItem->checkState(id + 1) == Qt::Checked);
+        if(id == ItemTreeView::ID_ANY){
+            for(size_t i=0; i < checkColumns.size(); ++i){
+                if(itvItem->checkState(i + 1) == Qt::Checked){
+                    return true;
+                }
+            }
+            return false;
+        } else {
+            return (itvItem->checkState(id + 1) == Qt::Checked);
+        }
     }
     return false;
 }
-    
+
 
 bool ItemTreeView::checkItem(Item* item, bool checked, int id)
 {
@@ -873,6 +912,9 @@ SignalProxy<void(const ItemList<>&)> ItemTreeView::sigSelectionOrTreeChanged()
 
 SignalProxy<void(Item* item, bool isChecked)> ItemTreeView::sigCheckToggled(int id)
 {
+    if(id == ID_ANY){
+        return impl->sigAnyColumnCheckedToggled;
+    }
     if(id < static_cast<int>(impl->checkColumns.size())){
         return impl->checkColumns[id]->sigCheckToggled;
     }
@@ -882,6 +924,9 @@ SignalProxy<void(Item* item, bool isChecked)> ItemTreeView::sigCheckToggled(int 
 
 SignalProxy<void(bool isChecked)> ItemTreeView::sigCheckToggled(Item* item, int id)
 {
+    if(id == ID_ANY){
+        return impl->getOrCreateItvItem(item)->sigAnyColumnCheckedToggled;
+    }
     if(id < static_cast<int>(impl->checkColumns.size())){
         return impl->getOrCreateItvItem(item)->getOrCreateSigCheckToggled(id);
     }
@@ -1230,7 +1275,6 @@ void ItemTreeViewImpl::restoreExpandedItems(const Archive& archive)
 {
     const Listing& expanded = *archive.findListing("expanded");
     if(expanded.isValid()){
-        collapseAll();
         for(int i=0; i < expanded.size(); ++i){
             Item* item = archive.findItem(expanded.at(i));
             if(item){
@@ -1240,6 +1284,15 @@ void ItemTreeViewImpl::restoreExpandedItems(const Archive& archive)
                 }
             }
         }
+    }
+}
+
+
+void ItemTreeView::expandItem(Item* item, bool expanded)
+{
+    ItvItem* itvItem = impl->getItvItem(item);
+    if(itvItem){
+        itvItem->setExpanded(expanded);
     }
 }
 
